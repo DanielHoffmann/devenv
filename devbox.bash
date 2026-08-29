@@ -4,7 +4,7 @@
 # Fallback defaults via env: DEVBOX_IMAGE, DEVBOX_PROJECT
 devbox() {
   local image="${DEVBOX_IMAGE:-devbox}"
-  local project="${DEVBOX_PROJECT:-$HOME/code}"   # <- adjust to your layout
+  local project="${DEVBOX_PROJECT:-$HOME/workspace}"   # <- adjust to your layout
 
   local OPTIND opt
   while getopts ":i:p:h" opt; do
@@ -47,16 +47,27 @@ devbox() {
     -v "${project}:/workspace:Z" \
     `# named volumes (container-managed, not host paths):` \
     `#   dependency & build caches (cargo registry, go modules, npm, pnpm bins)` \
-    -v devbox-cache:/home/dev/.cache \
+    -v devbox-cache:/home/devbox/.cache \
     `#   omp credentials survive restarts; log in once with: omp /login` \
-    -v devbox-omp:/home/dev/.omp \
+    -v devbox-omp:/home/devbox/.omp \
     `#   shell history and misc state` \
-    -v devbox-state:/home/dev/.local/state \
+    -v devbox-state:/home/devbox/.local/state \
     `# --- network: dev servers reachable at http://localhost:PORT ---` \
     `# bound to 127.0.0.1 so they are NOT exposed to your LAN` \
     -p 127.0.0.1:3000-3999:3000-3999 \
-    `# --- resource ceilings (tune or delete to taste) ---` \
+    `# --- resource ceilings ---` \
     --pids-limit 4096 \
     --memory 8g \
     "$image" "$@"
+}
+
+
+devbox-build() {
+  local image="${DEVBOX_IMAGE:-devbox}"
+  while getopts ":i:p:h" opt; do
+  case "$opt" in
+    i) image="$OPTARG" ;;
+    esac
+  done
+  podman build -t "$image" .
 }

@@ -8,8 +8,8 @@ The container is designed to be run **rootless** with an **immutable root filesy
 
 | File | Purpose | Goes where |
 |---|---|---|
-| `Containerfile.hardened` | The image definition | anywhere you build from |
-| `devbox.bash` | `devbox` shell function | sourced from `~/.bash_profile` |
+| `Containerfile` | The image definition | anywhere you build from |
+| `devbox.bash` | `devbox` and `devbox-build` shell functions | source in shell (`~/.bashrc`) |
 | `devcontainer.json` | VS Code Dev Containers config | `<workspace>/.devcontainer/` |
 
 ## Prerequisites
