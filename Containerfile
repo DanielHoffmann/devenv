@@ -1,6 +1,7 @@
 # Dev environment image (hardened) — build with podman:
-#   podman build -t devbox -f Containerfile .
-#   ./run.sh          # wrapper with hardened flags (see run.sh)
+#   podman build -t devbox .
+# Run via the devbox() shell function (devbox.bash) or VS Code devcontainer,
+# both of which apply the hardened runtime flags. See SETUP.md.
 #
 # Hardening baked into the image:
 #   - no sudo, no sudoers entry, no setuid escalation path
@@ -14,7 +15,7 @@
 
 FROM docker.io/library/ubuntu:24.04
 
-ARG USERNAME=dev
+ARG USERNAME=devbox
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------------------
@@ -57,9 +58,7 @@ RUN ln -sf "$(command -v fdfind)" /usr/local/bin/fd \
 # (Ubuntu 24.04 ships a default 'ubuntu' user at uid 1000 — replace it)
 # ---------------------------------------------------------------------------
 RUN userdel -r ubuntu 2>/dev/null || true \
- && useradd -m -u 1000 -s /usr/bin/zsh "${USERNAME}" \
- && mkdir -p /workspace \
- && chown "${USERNAME}:${USERNAME}" /workspace
+ && useradd -m -u 1000 -s /usr/bin/zsh "${USERNAME}"
 
 USER ${USERNAME}
 WORKDIR /home/${USERNAME}
@@ -107,13 +106,13 @@ RUN mise use --global \
  && mise install \
  && mise reshim
 
-# pnpm store lives INSIDE the workspace mount (/workspace/.pnpm-store), not in
+# pnpm store lives INSIDE the workspace mount (~/workspace/.pnpm-store), not in
 # the cache volume: hard links cannot cross mounts, so keeping the store and
 # node_modules on the same mount preserves pnpm's link-based installs. Mount a
-# PARENT directory containing your projects (e.g. ~/code) as /workspace and
-# every project shares one deduplicated store, persisted on the host.
+# PARENT directory containing your projects as ~/workspace and every project
+# shares one deduplicated store, persisted on the host.
 # (Written to ~/.config/pnpm/rc, baked into the image.)
-RUN pnpm config set store-dir /workspace/.pnpm-store
+RUN pnpm config set store-dir /home/${USERNAME}/workspace/.pnpm-store
 
 # ---------------------------------------------------------------------------
 # omp (oh-my-pi) — AI coding agent / harness
@@ -144,10 +143,11 @@ RUN { \
 #   ~/.omp          -> volume  (omp credentials/config, persistent)
 #   ~/.local/state  -> volume  (shell history etc., persistent)
 #   ~/.vscode-server-> volume  (VS Code remote server, when using devcontainers)
+#   ~/workspace     -> bind    (your projects, the only host path exposed)
 # ---------------------------------------------------------------------------
-RUN mkdir -p ~/.cache ~/.omp ~/.local/state ~/.vscode-server
+RUN mkdir -p ~/.cache ~/.omp ~/.local/state ~/.vscode-server ~/workspace
 
-WORKDIR /workspace
+WORKDIR /home/${USERNAME}/workspace
 
 # Default to an interactive login zsh
 CMD ["zsh", "-l"]

@@ -20,15 +20,15 @@
     // dev servers reachable at http://localhost:PORT on the host
     // (127.0.0.1-bound: not exposed to your LAN)
     "--publish=127.0.0.1:3000-3999:3000-3999",
-    // rootless podman: map your host UID onto the container's 'dev' user (1000)
+    // rootless podman: map your host UID onto the container's 'devbox' user (1000)
     // so files created in the workspace belong to you on both sides
     "--userns=keep-id:uid=1000,gid=1000"
     // SELinux hosts (Fedora & co.) may additionally need:
     // "--security-opt=label=disable"
   ],
 
-  "containerUser": "dev",
-  "remoteUser": "dev",
+  "containerUser": "devbox",
+  "remoteUser": "devbox",
   // podman handles ownership via keep-id; don't let VS Code rewrite /etc/passwd
   "updateRemoteUserUID": false,
 
@@ -40,10 +40,10 @@
   // Same named volumes as devbox(), plus one for the VS Code server itself
   // (it must be writable + persistent under the read-only rootfs)
   "mounts": [
-    "source=devbox-cache,target=/home/dev/.cache,type=volume",
-    "source=devbox-omp,target=/home/dev/.omp,type=volume",
-    "source=devbox-state,target=/home/dev/.local/state,type=volume",
-    "source=devbox-vscode,target=/home/dev/.vscode-server,type=volume"
+    "source=devbox-cache,target=/home/devbox/.cache,type=volume",
+    "source=devbox-omp,target=/home/devbox/.omp,type=volume",
+    "source=devbox-state,target=/home/devbox/.local/state,type=volume",
+    "source=devbox-vscode,target=/home/devbox/.vscode-server,type=volume"
   ],
 
   // Keep the container alive for VS Code instead of running zsh as PID 1
