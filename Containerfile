@@ -9,7 +9,7 @@
 #   - mount points pre-created for tmpfs/volumes (~/.cache, ~/.omp, state)
 #
 # Base: Ubuntu 24.04
-# Runtimes via mise: Node.js (LTS), Rust, Go, Zig — plus pnpm
+# Runtimes via mise: Node.js 24, pnpm 11, Rust 1.94, .NET 9, Go, Zig
 # Shell: zsh + oh-my-zsh
 # Agent harness: omp (oh-my-pi), installed through mise's github backend
 
@@ -40,6 +40,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux htop vim nano rsync \
     # misc
     locales procps \
+    # .NET runtime dependency
+    libicu74 \
     python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
@@ -71,7 +73,8 @@ RUN git lfs install
 # ---------------------------------------------------------------------------
 # oh-my-zsh
 # ---------------------------------------------------------------------------
-RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended \
+ && sed -i 's/^ZSH_THEME=.*/ZSH_THEME="robbyrussell"/' ~/.zshrc
 
 # ---------------------------------------------------------------------------
 # mise + toolchains (Node.js, Rust, Go, Zig)
@@ -96,15 +99,36 @@ ENV CARGO_HOME=/home/${USERNAME}/.cache/cargo \
     PNPM_HOME=/home/${USERNAME}/.cache/pnpm
 ENV PATH="${CARGO_HOME}/bin:${GOPATH}/bin:${NPM_CONFIG_PREFIX}/bin:${PNPM_HOME}:${PATH}"
 
-# Pin versions here if you want reproducible builds, e.g. node@22 go@1.24
+# Versions pinned to match the projects' .tool-versions / mise.toml
+# (go and zig deliberately track latest)
 RUN mise use --global \
-      node@lts \
-      pnpm@latest \
-      rust@latest \
+      node@24.11.0 \
+      rust@1.94 \
+      dotnet@9 \
       go@latest \
       zig@latest \
  && mise install \
  && mise reshim
+
+# pnpm via the npm backend (matching the projects' `npm:pnpm` pin — a plain
+# `pnpm` resolves to a different backend and would NOT satisfy it).
+# Separate step: the npm backend needs node installed first.
+RUN mise use --global npm:pnpm@11.0.8 \
+ && mise reshim
+
+# Rust extras matching the projects' [tools.rust] (components + targets).
+# rustup writes into the toolchain directory (image content, read-only at
+# runtime), so `rustup target/component add` in a running container fails —
+# extend this line and rebuild instead.
+RUN rustup component add clippy rustfmt \
+ && rustup target add wasm32-wasip1
+
+# nx, installed globally via mise's npm backend.
+# NOTE: deliberately NOT `npm install -g` — the npm global prefix points into
+# ~/.cache, which is shadowed by the cache volume at runtime, so anything
+# npm-globally installed at build time would be invisible in running
+# containers. mise installs land in ~/.local/share/mise (real image content).
+RUN mise use --global npm:nx && mise reshim
 
 # pnpm store lives INSIDE the workspace mount (~/workspace/.pnpm-store), not in
 # the cache volume: hard links cannot cross mounts, so keeping the store and
@@ -131,6 +155,8 @@ RUN { \
       echo 'eval "$(~/.local/bin/mise activate zsh)"'; \
       echo 'command -v omp >/dev/null && eval "$(omp completions zsh)"'; \
       echo 'alias ll="ls -lah"'; \
+      echo '# per-workspace shell config, lives on the host (created by devbox())'; \
+      echo '[[ -f ~/workspace/.zshrc ]] && source ~/workspace/.zshrc'; \
       echo '# root fs is read-only at runtime; keep history on the state volume'; \
       echo 'export HISTFILE="$HOME/.local/state/zsh_history"'; \
       echo 'export HISTSIZE=50000 SAVEHIST=50000'; \

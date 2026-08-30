@@ -1,6 +1,6 @@
 # devbox — hardened podman dev environment
 
-A sandboxed development container for running toolchains and the [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi) coding agent with limited blast radius. Ubuntu 24.04 base, toolchains managed by [mise](https://mise.jdx.dev) (Node.js LTS, pnpm, Rust, Go, Zig), zsh + oh-my-zsh, and a set of everyday CLI tools (jq, git-lfs, ripgrep, fd, fzf, bat, tmux, and friends).
+A sandboxed development container for running toolchains and the [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi) coding agent with limited blast radius. Ubuntu 24.04 base, toolchains managed by [mise](https://mise.jdx.dev) (Node.js 24, pnpm 11, nx, Rust 1.94, .NET 9, Go, Zig), zsh + oh-my-zsh, and a set of everyday CLI tools (jq, git-lfs, ripgrep, fd, fzf, bat, tmux, and friends).
 
 The container is designed to be run **rootless** with an **immutable root filesystem**, **no capabilities**, and **no privilege escalation path** — see [Security model](#security-model).
 
@@ -28,7 +28,7 @@ or, once the shell functions are installed (step 2), just `devbox-build` — it 
 
 All toolchains are installed at build time because the container's root filesystem is read-only at runtime. This is the workflow's central rule: **to add or update a tool, edit the Containerfile and rebuild** — there is deliberately no `sudo apt install` inside a running container. Rebuilds are fast thanks to layer caching.
 
-Toolchain versions are set to `latest`/`lts` in the `mise use --global` block. Pin them (e.g. `node@22 go@1.24 zig@0.14`) if you want reproducible images.
+Toolchain versions in the `mise use --global` block are pinned to match the projects' `.tool-versions`/`mise.toml` (go and zig track latest). When a project bumps a pin, update it here and rebuild — mise does not fall back to another installed version, so a stale pin surfaces as `command not found` inside that project.
 
 ## 2. Install the shell functions
 
@@ -65,6 +65,10 @@ devbox-delete -v             # ... and also remove the devbox-* volumes
 The first terminal owns the container's lifetime: when that shell exits, the container stops and every attached session dies with it (`/tmp` contents evaporate too, as usual). Exit the extra shells like any other; only the first one tears things down. For long-lived sessions where that coupling is annoying, `tmux` is installed in the image — one `devbox`, multiple tmux windows — which also survives host terminal-emulator crashes.
 
 Because mounts and ports are fixed when a container starts, `-p` on an attach is ignored (a notice is printed). To use a different workspace or image concurrently, use a different image tag (`-i`), which gets its own container.
+
+### Per-workspace shell config
+
+Container shells also source `~/workspace/.zshrc` (i.e. `<workspace>/.zshrc` on the host — `devbox` creates it empty on first run). Since the container's own `~/.zshrc` is read-only image content, this file is the place for aliases, env vars, and prompt tweaks that should survive rebuilds without baking them into the image. It loads after the image's config, so it can override anything. Edit it from either side; changes apply to new shells.
 
 ## 3. pnpm store and gitignore
 

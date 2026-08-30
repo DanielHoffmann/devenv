@@ -36,6 +36,9 @@ devbox() {
   # resolve to an absolute path (podman requires one for bind mounts)
   project="$(cd "$project" && pwd)"
 
+  # per-workspace shell config, sourced by the container's ~/.zshrc
+  [[ -f "$project/.zshrc" ]] || touch "$project/.zshrc"
+
   # One shared container per image name: if it's already running, open
   # another shell in it (podman exec) instead of creating a second container.
   local name="$image"

@@ -3,7 +3,7 @@
 //
 // Prereqs (one-time):
 //   1. VS Code setting:  "dev.containers.dockerPath": "podman"
-//   2. Image built:      podman build -t devbox -f Containerfile.hardened .
+//   2. Image built:      devbox-build (or: podman build -t devbox .)
 {
   "name": "devbox",
   "image": "devbox",
@@ -27,15 +27,19 @@
     // "--security-opt=label=disable"
   ],
 
+  // per-workspace shell config sourced by the container's ~/.zshrc — create it
+  // empty if missing (host-side, before container start; same as devbox())
+  "initializeCommand": ["/bin/sh", "-c", "test -f \"$1/.zshrc\" || touch \"$1/.zshrc\"", "sh", "${localWorkspaceFolder}"],
+
   "containerUser": "devbox",
   "remoteUser": "devbox",
   // podman handles ownership via keep-id; don't let VS Code rewrite /etc/passwd
   "updateRemoteUserUID": false,
 
-  // The opened folder (your projects' parent dir) mounts at /workspace,
+  // The opened folder (your projects' parent dir) mounts at ~/workspace,
   // matching the pnpm store-dir baked into the image
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
-  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/devbox/workspace,type=bind",
+  "workspaceFolder": "/home/devbox/workspace",
 
   // Same named volumes as devbox(), plus one for the VS Code server itself
   // (it must be writable + persistent under the read-only rootfs)
@@ -56,7 +60,8 @@
       "extensions": [
         "rust-lang.rust-analyzer",
         "golang.go",
-        "ziglang.vscode-zig"
+        "ziglang.vscode-zig",
+        "ms-dotnettools.csharp"
       ],
       "settings": {
         "terminal.integrated.defaultProfile.linux": "zsh"
