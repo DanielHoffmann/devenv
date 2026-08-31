@@ -39,6 +39,17 @@ devbox() {
   # per-workspace shell config, sourced by the container's ~/.zshrc
   [[ -f "$project/.zshrc" ]] || touch "$project/.zshrc"
 
+  # dedicated keypair for SSH access into the container (editor remoting)
+  local sshkey="$HOME/.ssh/devbox_ed25519"
+  if [[ ! -f "$sshkey" ]]; then
+    if ! command -v ssh-keygen >/dev/null; then
+      echo "devbox: ssh-keygen not found (install openssh-client)" >&2
+      return 1
+    fi
+    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+    ssh-keygen -q -t ed25519 -N "" -C "devbox" -f "$sshkey" || return 1
+  fi
+
   # One shared container per image name: if it's already running, open
   # another shell in it (podman exec) instead of creating a second container.
   local name="$image"
@@ -58,7 +69,7 @@ devbox() {
     --cap-drop=all \
     --security-opt no-new-privileges \
     `# map host user -> container devbox (uid 1000) so workspace files` \
-    `# are owned by you on both sides (matches devcontainer.json)` \
+    `# are owned by you on both sides` \
     --userns=keep-id:uid=1000,gid=1000 \
     `# --- immutable root filesystem ---` \
     --read-only \
@@ -72,11 +83,17 @@ devbox() {
     -v devbox-cache:/home/devbox/.cache \
     `#   omp credentials survive restarts; log in once with: omp /login` \
     -v devbox-omp:/home/devbox/.omp \
-    `#   shell history and misc state` \
+    `#   shell history and misc state (also holds the sshd host key)` \
     -v devbox-state:/home/devbox/.local/state \
+    `#   editor remote server (open-remote-ssh installs it here)` \
+    -v devbox-vscodium:/home/devbox/.vscodium-server \
+    `# public half of the devbox keypair, for sshd key auth (read-only)` \
+    -v "${sshkey}.pub:/home/devbox/.ssh/authorized_keys:ro" \
     `# --- network: dev servers reachable at http://localhost:PORT ---` \
     `# bound to 127.0.0.1 so they are NOT exposed to your LAN` \
     -p 127.0.0.1:3000-3999:3000-3999 \
+    `# sshd, for editor access: ssh -p 2222 devbox@localhost` \
+    -p 127.0.0.1:2222:2222 \
     `# --- resource ceilings (tune or delete to taste) ---` \
     --pids-limit 4096 \
     --memory 8g \
@@ -106,6 +123,32 @@ devbox-build() {
     return 1
   fi
   podman build -t "$image" "$src"
+}
+
+# devbox-stop — stop all running containers of the devbox image.
+# Containers are started with --rm, so stopping also removes them; attached
+# shells and editor SSH sessions are terminated.
+devbox-stop() {
+  local image="${DEVBOX_IMAGE:-devbox}"
+
+  local OPTIND opt
+  while getopts ":i:h" opt; do
+    case "$opt" in
+      i) image="$OPTARG" ;;
+      h) echo "usage: devbox-stop [-i image]" >&2; return 0 ;;
+      \?) echo "devbox-stop: unknown option -$OPTARG (use -h)" >&2; return 2 ;;
+      :) echo "devbox-stop: option -$OPTARG requires an argument" >&2; return 2 ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  local containers
+  containers="$(podman ps -q --filter "ancestor=$image")"
+  if [[ -z "$containers" ]]; then
+    echo "devbox-stop: no running '$image' containers"
+    return 0
+  fi
+  printf '%s\n' $containers | xargs -r podman stop
 }
 
 # devbox-delete — remove the devbox image and any containers created from it.

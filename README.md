@@ -1,6 +1,6 @@
 # devbox — hardened podman dev environment
 
-A sandboxed development container for running toolchains and the [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi) coding agent with limited blast radius. Ubuntu 24.04 base, toolchains managed by [mise](https://mise.jdx.dev) (Node.js 24, pnpm 11, nx, Rust 1.94, .NET 9, Go, Zig), zsh + oh-my-zsh, and a set of everyday CLI tools (jq, git-lfs, ripgrep, fd, fzf, bat, tmux, and friends).
+A sandboxed development container for running toolchains and the [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi) coding agent with limited blast radius. Ubuntu 24.04 base with manually installed, system-wide toolchains (Node.js 24, pnpm 11, nx, Rust 1.94, .NET 9, Go, Zig — pinned via `ARG`s at the top of the Containerfile), zsh + oh-my-zsh, and a set of everyday CLI tools (jq, git-lfs, ripgrep, fd, fzf, bat, tmux, and friends).
 
 The container is designed to be run **rootless** with an **immutable root filesystem**, **no capabilities**, and **no privilege escalation path** — see [Security model](#security-model).
 
@@ -10,7 +10,6 @@ The container is designed to be run **rootless** with an **immutable root filesy
 |---|---|---|
 | `Containerfile` | The image definition | anywhere you build from |
 | `devbox.bash` | `devbox`, `devbox-build`, `devbox-delete` shell functions | sourced from `~/.bash_profile` |
-| `devcontainer.json` | VS Code Dev Containers config | `<workspace>/.devcontainer/` |
 
 ## Prerequisites
 
@@ -28,7 +27,7 @@ or, once the shell functions are installed (step 2), just `devbox-build` — it 
 
 All toolchains are installed at build time because the container's root filesystem is read-only at runtime. This is the workflow's central rule: **to add or update a tool, edit the Containerfile and rebuild** — there is deliberately no `sudo apt install` inside a running container. Rebuilds are fast thanks to layer caching.
 
-Toolchain versions in the `mise use --global` block are pinned to match the projects' `.tool-versions`/`mise.toml` (go and zig track latest). When a project bumps a pin, update it here and rebuild — mise does not fall back to another installed version, so a stale pin surfaces as `command not found` inside that project.
+Toolchain versions are pinned as `ARG`s at the top of the Containerfile, matching the projects' `.tool-versions`/`mise.toml`; go and zig are pinned to a recent release and updated manually. When a project bumps a pin, update the `ARG` and rebuild. Note the toolchains are installed system-wide and version managers are not part of the image — a project's `.tool-versions`/`mise.toml` is not enforced inside the container, so keeping the `ARG`s in sync with the projects is a manual responsibility.
 
 ## 2. Install the shell functions
 
@@ -54,6 +53,7 @@ devbox -p ~/other/workspace  # different workspace dir
 devbox make test             # trailing args run as the container command
 devbox (again, elsewhere)    # 2nd+ terminal: opens a shell in the SAME container
 devbox-build                 # (re)build the image from the current dir
+devbox-stop                  # stop running devbox containers (kills sessions)
 devbox-delete                # remove image + its containers (volumes kept)
 devbox-delete -v             # ... and also remove the devbox-* volumes
 ```
@@ -62,7 +62,7 @@ devbox-delete -v             # ... and also remove the devbox-* volumes
 
 `devbox` keeps **one shared container per image name**: the first invocation creates and owns it; every further `devbox` (or `devbox some-command`) from any terminal opens an additional shell/process in that same container via `podman exec` — shared filesystem, processes, and ports.
 
-The first terminal owns the container's lifetime: when that shell exits, the container stops and every attached session dies with it (`/tmp` contents evaporate too, as usual). Exit the extra shells like any other; only the first one tears things down. For long-lived sessions where that coupling is annoying, `tmux` is installed in the image — one `devbox`, multiple tmux windows — which also survives host terminal-emulator crashes.
+The first terminal owns the container's lifetime: when that shell exits (or on `devbox-stop`), the container stops and every attached session dies with it (`/tmp` contents evaporate too, as usual). Exit the extra shells like any other; only the first one tears things down. For long-lived sessions where that coupling is annoying, `tmux` is installed in the image — one `devbox`, multiple tmux windows — which also survives host terminal-emulator crashes.
 
 Because mounts and ports are fixed when a container starts, `-p` on an attach is ignored (a notice is printed). To use a different workspace or image concurrently, use a different image tag (`-i`), which gets its own container.
 
@@ -91,24 +91,37 @@ devbox omp   # then authenticate via /login inside omp
 
 Never bake API keys into the image or mount your host `~/.omp` — the volume keeps credentials container-side only.
 
-## 5. VS Code integration (Dev Containers)
+## 5. Editor integration (open-remote-ssh)
 
-Language servers for Rust/Go/Zig need the container's toolchains and caches, so the VS Code extension host runs inside the container.
+Language servers for Rust/Go/Zig/.NET need the container's toolchains and caches, so the editor connects *into* the running container over SSH using [Open Remote - SSH](https://github.com/jeanp413/open-remote-ssh) (`jeanp413.open-remote-ssh`, on Open VSX — the open Remote-SSH implementation for VSCodium).
+
+How the plumbing works: the image runs a user-level `sshd` on port 2222 (key-auth only, published to `127.0.0.1` on the host). `devbox` generates a dedicated keypair `~/.ssh/devbox_ed25519` on first run and mounts its public half as the container's `authorized_keys`. The sshd host key persists on the `devbox-state` volume, so the container's identity is stable across restarts. The editor's remote server installs into the `devbox-vscodium` volume.
 
 One-time setup:
 
-1. Install the **Dev Containers** extension.
-2. Add to your VS Code user settings: `"dev.containers.dockerPath": "podman"`.
-3. Copy the config into your workspace: `mkdir -p ~/workspace/.devcontainer && cp devcontainer.json ~/workspace/.devcontainer/`.
+1. Install the **Open Remote - SSH** extension from Open VSX, and enable its proposed API: run **"Preferences: Configure Runtime Arguments"**, add `"enable-proposed-api": ["jeanp413.open-remote-ssh"]` to `argv.json`, and restart the editor.
+2. Add a host entry to `~/.ssh/config`:
 
-Daily use: open `~/workspace` in VS Code → command palette → **"Dev Containers: Reopen in Container"**. rust-analyzer, gopls, and the zig LSP run container-side with correct paths; the integrated terminal lands in the container with zsh, omp, and all toolchains available.
+```
+Host devbox
+    HostName 127.0.0.1
+    Port 2222
+    User devbox
+    IdentityFile ~/.ssh/devbox_ed25519
+    IdentitiesOnly yes
+    UserKnownHostsFile ~/.ssh/known_hosts_devbox
+    StrictHostKeyChecking accept-new
+```
+
+Why the non-obvious lines: `IdentitiesOnly yes` stops ssh from offering every key in your agent first — with several keys loaded, sshd's auth-attempt limit can reject the connection before the right key is tried. The separate `UserKnownHostsFile` keeps the container's host key out of your main `known_hosts`; after `devbox-delete -v` (which deletes the state volume holding the host key), just remove that one file. `StrictHostKeyChecking accept-new` trusts the key on first connect but still errors if it later changes.
+
+Daily use: start the container (`devbox` in any terminal — the SSH daemon starts with it), then in the editor: **"Remote-SSH: Connect to Host..." → devbox**, and open `/home/devbox/workspace`. The extension reads the same `~/.ssh/config`, so no extension-side host configuration is needed. Install rust-analyzer, gopls, the Zig and C# extensions *in the remote* when prompted — they run container-side with the container's toolchains. Plain `ssh devbox` from a terminal exercises the identical path, which makes it the first diagnostic: if it works and the editor doesn't, the problem is extension setup (usually the `argv.json` step or a missed editor restart), not SSH.
 
 Notes:
 
-- The devcontainer reuses the same image and named volumes as the `devbox` function — same caches, same omp login — but runs as a **separate container**.
-- JS/TS works out of the box in VS Code: its built-in TypeScript extension runs in the container-side extension host.
-- On SELinux hosts (Fedora family), uncomment the `"--security-opt=label=disable"` line in `devcontainer.json` if mounts hit permission errors. Ubuntu/Debian hosts don't need it.
-- File ownership across the boundary is handled by `--userns=keep-id`, mapping your host user onto the container's `devbox` user (uid 1000).
+- The container must be running before the editor connects; when the owning `devbox` shell exits, the SSH session and editor connection drop with it.
+- sshd runs as the unprivileged `devbox` user — it can only ever log in as that user, fits the no-root/no-caps model, and its failure is non-fatal to the shell (check `/tmp/sshd.log` in the container if connecting fails).
+- The dedicated keypair means no reuse of your personal SSH keys; the private key never enters the container, and auth is possible only from your host user account.
 
 ## Ports
 
@@ -116,8 +129,9 @@ Container ports **3000–3999** are published to the host, so a dev server liste
 
 - Inside the container, bind servers to `0.0.0.0` (or `::`), not `127.0.0.1` — the container's loopback is separate from the host's, so a server bound only to the container's localhost is unreachable through the published port. Most dev servers have a `--host 0.0.0.0` flag.
 - On the host side the ports are bound to `127.0.0.1` only, so nothing is exposed to your LAN.
+- Port **2222** is additionally published for the container's SSH daemon (editor access, see step 5).
 
-Ports outside the range aren't reachable; widen or change the range in `devbox.bash` and `devcontainer.json` if needed. In VS Code, the Dev Containers extension additionally auto-forwards any port it detects, independent of this range.
+Ports outside the range aren't reachable; widen or change the range in `devbox.bash` if needed. (The editor's SSH connection can additionally tunnel arbitrary ports on demand, independent of this range.)
 
 ## Persistent state (named volumes)
 
@@ -127,8 +141,8 @@ Everything outside the workspace mount that needs to survive restarts lives in p
 |---|---|---|
 | `devbox-cache` | `~/.cache` | cargo registry + bins, Go module cache + bins, npm cache + globals, pnpm globals |
 | `devbox-omp` | `~/.omp` | omp credentials and config |
-| `devbox-state` | `~/.local/state` | zsh history, misc state |
-| `devbox-vscode` | `~/.vscode-server` | VS Code remote server + container-side extensions |
+| `devbox-state` | `~/.local/state` | zsh history, sshd host key, misc state |
+| `devbox-vscodium` | `~/.vscodium-server` | editor remote server + container-side extensions |
 
 Useful commands: `podman volume ls`, and `podman volume rm devbox-cache` for a clean dependency slate (it regenerates on next use). `/tmp` is a size-capped tmpfs and evaporates every run.
 
@@ -146,21 +160,20 @@ Known accepted tradeoffs:
 
 - Everything under the workspace mount is readable/writable by whatever runs inside — including omp. Point the mount at a parent directory containing only projects you're comfortable exposing; use `-p` for anything narrower.
 - The cache volumes are persistent, executable, and on `$PATH` — the natural place for a malicious process to persist. `podman volume rm` any of them to reset.
-- With the devcontainer, your IDE's extension host shares the container boundary with the agent; the host remains protected, but IDE-vs-agent separation inside the container does not exist. The `devbox` function remains available as an IDE-free container when stricter separation is wanted.
+- When the editor is connected over SSH, its remote extension host shares the container boundary with the agent; the host remains protected, but IDE-vs-agent separation inside the container does not exist. Disconnecting the editor restores an IDE-free container when stricter separation is wanted.
 - Resource ceilings (`--pids-limit 4096`, `--memory 8g`) are runaway-process insurance; tune per machine.
 
 Rules that keep the model intact: never run via `sudo podman`, never add `--privileged`, never mount the podman socket into the container, and mount credentials only as named volumes, not host paths.
 
 ## Troubleshooting
 
-- **`fd`, tools missing in `podman exec` one-offs** — non-interactive contexts rely on mise shims already on `PATH` via `ENV`; if a freshly `mise use`d tool is missing, rebuild (runtime `mise install` can't write the read-only home).
 - **pnpm falls back to copying instead of hard links** — you ran pnpm outside `/workspace` scope or the store dir moved; verify `pnpm config get store-dir` prints `/home/devbox/workspace/.pnpm-store` inside the container.
-- **VS Code fails to attach / server install errors** — confirm `dockerPath` is `podman`, the image was rebuilt after the `.vscode-server` mount point was added, and try `podman volume rm devbox-vscode` to force a fresh server install.
-- **Permission denied writing to ~/workspace in the container, or wrong ownership** — both the `devbox` function and the devcontainer must run with `--userns=keep-id:uid=1000,gid=1000` (already present in both). Without it, rootless podman's default mapping makes mounted files appear root-owned inside the container, and the unprivileged `devbox` user cannot write them.
+- **Editor fails to connect over SSH** — first check plain `ssh devbox` from a terminal. Container not running → start `devbox`. Connection refused → sshd didn't start; check `/tmp/sshd.log` inside the container. Auth failure → verify the keypair exists (`~/.ssh/devbox_ed25519`) and the container was started by a `devbox` version that mounts its `.pub` as `authorized_keys`. Host-key warning after `devbox-delete -v` → the host key lived on the deleted state volume; clear `~/.ssh/known_hosts_devbox`. Server install issues → `podman volume rm devbox-vscodium` for a fresh install.
+- **Permission denied writing to ~/workspace in the container, or wrong ownership** — the `devbox` function must run with `--userns=keep-id:uid=1000,gid=1000` (already present). Without it, rootless podman's default mapping makes mounted files appear root-owned inside the container, and the unprivileged `devbox` user cannot write them.
 - **Network failures inside builds** — corporate proxies/DNS: pass `--network=host` to `podman build` only (build-time, not runtime) or configure proxy env via `--build-arg`.
 
 ## Updating
 
-- **Toolchains**: edit versions in the Containerfile, rebuild, restart containers. Caches in `devbox-cache` carry over.
-- **omp**: pinned via mise's github backend; rebuild picks up the latest release, or pin a version: `github:can1357/oh-my-pi@vX.Y.Z`.
+- **Toolchains**: bump the `ARG` pins at the top of the Containerfile, rebuild, restart containers. Caches in `devbox-cache` carry over.
+- **omp**: installed via its official installer at build time; rebuilding picks up the latest release.
 - **Base image**: `podman build --pull ...` to refresh Ubuntu layers for security updates; worth doing periodically.

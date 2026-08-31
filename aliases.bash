@@ -3,7 +3,6 @@ export VISUAL='nano'
 
 alias d=docker
 alias p=podman
-alias chrome='open -n -a /Applications/Google\ Chrome.app --args --disable-web-security --user-data-dir="$HOME/chrome-disable-security"'
 alias size="du -ch "
 alias sg='grep $1 --context=3'
 alias branch_name='git rev-parse --abbrev-ref HEAD'
