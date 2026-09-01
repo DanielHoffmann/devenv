@@ -49,6 +49,11 @@ devbox() {
     mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
     ssh-keygen -q -t ed25519 -N "" -C "devbox" -f "$sshkey" || return 1
   fi
+  # mount a COPY of the public key from a devbox-owned dir, not ~/.ssh itself:
+  # the mount is SELinux-labeled (:Z), and relabeling must never touch ~/.ssh.
+  local akeys="$HOME/.config/devbox/authorized_keys"
+  mkdir -p "$HOME/.config/devbox"
+  cp -f "${sshkey}.pub" "$akeys"
 
   # One shared container per image name: if it's already running, open
   # another shell in it (podman exec) instead of creating a second container.
@@ -87,8 +92,9 @@ devbox() {
     -v devbox-state:/home/devbox/.local/state \
     `#   editor remote server (open-remote-ssh installs it here)` \
     -v devbox-vscodium:/home/devbox/.vscodium-server \
-    `# public half of the devbox keypair, for sshd key auth (read-only)` \
-    -v "${sshkey}.pub:/home/devbox/.ssh/authorized_keys:ro" \
+    `# public half of the devbox keypair, for sshd key auth (read-only,` \
+    `# SELinux-labeled; a copy in ~/.config/devbox, never ~/.ssh itself)` \
+    -v "${akeys}:/home/devbox/.ssh/authorized_keys:ro,Z" \
     `# --- network: dev servers reachable at http://localhost:PORT ---` \
     `# bound to 127.0.0.1 so they are NOT exposed to your LAN` \
     -p 127.0.0.1:3000-3999:3000-3999 \
