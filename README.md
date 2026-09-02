@@ -49,7 +49,7 @@ devbox
 Usage (`-h` prints this too):
 
 ```sh
-devbox                       # interactive zsh, workspace mounted at ~/workspace
+devbox                       # interactive zsh, workspace mounted at ~/shared
 devbox -i myimage            # different image
 devbox -p ~/other/workspace  # different workspace dir
 devbox make test             # trailing args run as the container command
@@ -79,7 +79,7 @@ The four steps from zero to an editor whose terminal, language servers, and exte
        StrictHostKeyChecking accept-new
    ```
 
-4. With the container running (`devbox` in any terminal): command palette → **"Remote-SSH: Connect to Host..." → devbox**, then open `/home/devbox/workspace`.
+4. With the container running (`devbox` in any terminal): command palette → **"Remote-SSH: Connect to Host..." → devbox**, then open `/home/devbox/shared`.
 
 First connect downloads the editor's remote server into the container (needs a minute and network); install language extensions "in the remote" when prompted. Sanity check when anything fails: `ssh devbox` from a terminal.
 
@@ -93,7 +93,7 @@ Because mounts and ports are fixed when a container starts, `-p` on an attach is
 
 ### Per-workspace shell config
 
-Container shells also source `~/workspace/.zshrc` (i.e. `<workspace>/.zshrc` on the host — `devbox` creates it empty on first run). Since the container's own `~/.zshrc` is read-only image content, this file is the place for aliases, env vars, and prompt tweaks that should survive rebuilds without baking them into the image. It loads after the image's config, so it can override anything. Edit it from either side; changes apply to new shells.
+Container shells also source `~/shared/.zshrc` (i.e. `<workspace>/.zshrc` on the host — `devbox` creates it empty on first run). Since the container's own `~/.zshrc` is read-only image content, this file is the place for aliases, env vars, and prompt tweaks that should survive rebuilds without baking them into the image. It loads after the image's config, so it can override anything. Edit it from either side; changes apply to new shells.
 
 
 ## 2. Selecting components and versions
@@ -165,7 +165,7 @@ Host devbox
 
 Why the non-obvious lines: `IdentitiesOnly yes` stops ssh from offering every key in your agent first — with several keys loaded, sshd's auth-attempt limit can reject the connection before the right key is tried. The separate `UserKnownHostsFile` keeps the container's host key out of your main `known_hosts`; after `devbox-delete -v` (which deletes the state volume holding the host key), just remove that one file. `StrictHostKeyChecking accept-new` trusts the key on first connect but still errors if it later changes.
 
-Daily use: start the container (`devbox` in any terminal — the SSH daemon starts with it), then in the editor: **"Remote-SSH: Connect to Host..." → devbox**, and open `/home/devbox/workspace`. The extension reads the same `~/.ssh/config`, so no extension-side host configuration is needed. Install rust-analyzer, gopls, and the Zig extension *in the remote* when prompted — they run container-side with the container's toolchains. Plain `ssh devbox` from a terminal exercises the identical path, which makes it the first diagnostic: if it works and the editor doesn't, the problem is extension setup (usually the `argv.json` step or a missed editor restart), not SSH.
+Daily use: start the container (`devbox` in any terminal — the SSH daemon starts with it), then in the editor: **"Remote-SSH: Connect to Host..." → devbox**, and open `/home/devbox/shared`. The extension reads the same `~/.ssh/config`, so no extension-side host configuration is needed. Install rust-analyzer, gopls, and the Zig extension *in the remote* when prompted — they run container-side with the container's toolchains. Plain `ssh devbox` from a terminal exercises the identical path, which makes it the first diagnostic: if it works and the editor doesn't, the problem is extension setup (usually the `argv.json` step or a missed editor restart), not SSH.
 
 Notes:
 
@@ -189,8 +189,9 @@ Everything outside the workspace mount that needs to survive restarts lives in p
 
 | Volume | Mounted at | Holds |
 |---|---|---|
+| `<image>-workspace` | `~/workspace` | container-private workspace — persists across restarts, never visible on the host (unlike `~/shared`); also holds the pnpm store (`~/workspace/.pnpm-store`) |
 | `<image>-cache` | `~/.cache` | cargo registry + bins, Go module cache + bins, npm cache + globals |
-| `<image>-pnpm` | `~/.local/share/pnpm` | pnpm store, global bins, config |
+| `<image>-pnpm` | `~/.local/share/pnpm` | pnpm global bins |
 | `<image>-graphite` | `~/.config/graphite` | Graphite CLI auth token + cache |
 | `<image>-omp` | `~/.omp` | omp credentials and config |
 | `<image>-claude` | `~/.claude` | Claude Code credentials and config |
@@ -222,7 +223,7 @@ Rules that keep the model intact: never run via `sudo podman`, never add `--priv
 ## Troubleshooting
 
 - **Editor fails to connect over SSH** — first check plain `ssh devbox` from a terminal. Container not running → start `devbox`. Connection refused → sshd didn't start; check `/tmp/sshd.log` inside the container. Auth failure → verify the keypair exists (`~/.ssh/devbox_ed25519`) and the container was started by the current `devbox` (`podman inspect devbox` should show the `authorized_keys` mount). If `cat ~/.ssh/authorized_keys` *inside* the container gives permission denied, that's the SELinux signature of an unlabeled mount — restart with the current `devbox`, which mounts a labeled copy. Host-key warning after `devbox-delete -v` → the host key lived on the deleted state volume; clear `~/.ssh/known_hosts_devbox`. Server install issues → `podman volume rm devbox-vscodium` for a fresh install.
-- **Permission denied writing to ~/workspace in the container, or wrong ownership** — the `devbox` function must run with `--userns=keep-id:uid=1000,gid=1000` (already present). Without it, rootless podman's default mapping makes mounted files appear root-owned inside the container, and the unprivileged `devbox` user cannot write them.
+- **Permission denied writing to ~/shared in the container, or wrong ownership** — the `devbox` function must run with `--userns=keep-id:uid=1000,gid=1000` (already present). Without it, rootless podman's default mapping makes mounted files appear root-owned inside the container, and the unprivileged `devbox` user cannot write them.
 - **Network failures inside builds** — corporate proxies/DNS: pass `--network=host` to `podman build` only (build-time, not runtime) or configure proxy env via `--build-arg`.
 
 ## Updating

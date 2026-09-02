@@ -1,11 +1,11 @@
 # devbox — hardened podman dev container launcher
 # bash- and zsh-compatible; source this file from ~/.zshrc (or ~/.bash_profile).
-# Mounts the PARENT directory holding your projects at ~/workspace in the
+# Mounts the PARENT directory holding your projects at ~/shared in the
 # container.
 # Fallback defaults via env: DEVBOX_IMAGE, DEVBOX_PROJECT
 devbox() {
   local image="${DEVBOX_IMAGE:-devbox}"
-  local project="${DEVBOX_PROJECT:-$HOME/workspace}"   # <- adjust to your layout
+  local project="${DEVBOX_PROJECT:-$HOME/shared}"   # <- adjust to your layout
   local project_explicit=0
 
   local OPTIND opt
@@ -30,8 +30,7 @@ devbox() {
   shift $((OPTIND - 1))
 
   if [[ ! -d "$project" ]]; then
-    echo "devbox: project dir not found: $project" >&2
-    return 1
+    mkdir -p "$project"
   fi
   # resolve to an absolute path (podman requires one for bind mounts)
   project="$(cd "$project" && pwd)"
@@ -82,19 +81,19 @@ devbox() {
     --tmpfs /tmp:rw,exec,size=2g \
     `# --- writable carve-outs ---` \
     `# workspace (parent of your projects): the ONLY host path exposed` \
-    -v "${project}:/home/devbox/workspace:Z" \
+    -v "${project}:/home/devbox/shared:Z" \
     `# named volumes (container-managed, not host paths):` \
+    `# container-private workspace: persists across restarts but is never` \
+    `# visible on the host (unlike ~/shared); also holds the pnpm store` \
+    -v "${image}-workspace:/home/devbox/workspace" \
+    `# general application data` \
+    -v "${image}-share:/home/devbox/.local" \
     -v "${image}-cache:/home/devbox/.cache" \
-    `# pnpm home: config, global bins, content-addressable store` \
-    -v "${image}-pnpm:/home/devbox/.local/share/pnpm" \
-    `# Graphite CLI auth token + cache; log in once with: gt auth` \
-    -v "${image}-graphite:/home/devbox/.config/graphite" \
+    -v "${image}-config:/home/devbox/.config" \
     `# omp credentials survive restarts; log in once with: omp /login` \
     -v "${image}-omp:/home/devbox/.omp" \
     `# Claude Code config/credentials; log in once with: claude` \
     -v "${image}-claude:/home/devbox/.claude" \
-    `# shell history and misc state (also holds the sshd host key)` \
-    -v "${image}-state:/home/devbox/.local/state" \
     `# editor remote server (open-remote-ssh installs it here)` \
     -v "${image}-vscodium:/home/devbox/.vscodium-server" \
     `# ssh keys generated INSIDE the container (plus known_hosts, config);` \

@@ -211,8 +211,7 @@ RUN mkdir -p ~/.ssh ~/.config/sshd && chmod 700 ~/.ssh \
 # ---------------------------------------------------------------------------
 # oh-my-zsh
 # ---------------------------------------------------------------------------
-RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended \
- && sed -i 's/^ZSH_THEME=.*/ZSH_THEME="af-magic"/' ~/.zshrc
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
 
 # ---------------------------------------------------------------------------
 # PATH for the devbox user: user bins, then the system toolchains.
@@ -231,6 +230,15 @@ ENV CARGO_HOME=/home/${USERNAME}/.cache/cargo \
     NPM_CONFIG_PREFIX=/home/${USERNAME}/.cache/npm-global \
     PNPM_HOME=/home/${USERNAME}/.local/share/pnpm
 ENV PATH="/home/${USERNAME}/.local/bin:${CARGO_HOME}/bin:${GOPATH}/bin:${NPM_CONFIG_PREFIX}/bin:${PNPM_HOME}:/usr/local/cargo/bin:/usr/local/go/bin:${PATH}"
+
+# pnpm store on the container-private workspace volume (~/workspace/.pnpm-store):
+# same mount as projects cloned under ~/workspace, so pnpm's hard-linked installs
+# work there. Projects under ~/shared are on a different mount and fall back to
+# copying (hard links can't cross mounts).
+# (Written to ~/.config/pnpm/rc, baked into the image.)
+RUN if command -v pnpm >/dev/null; then \
+      pnpm config set store-dir /home/${USERNAME}/workspace/.pnpm-store; \
+    else echo "pnpm not installed; skipping store config"; fi
 
 # ---------------------------------------------------------------------------
 # omp (oh-my-pi) — AI coding agent / harness, via its official installer
@@ -269,7 +277,7 @@ RUN { \
       echo 'command -v omp >/dev/null && eval "$(omp completions zsh)"'; \
       echo 'alias ll="ls -lah"'; \
       echo '# per-workspace shell config, lives on the host (created by devbox())'; \
-      echo '[[ -f ~/workspace/.zshrc ]] && source ~/workspace/.zshrc'; \
+      echo '[[ -f ~/shared/.zshrc ]] && source ~/shared/.zshrc'; \
       echo '# root fs is read-only at runtime; keep history on the state volume'; \
       echo 'export HISTFILE="$HOME/.local/state/zsh_history"'; \
       echo 'export HISTSIZE=50000 SAVEHIST=50000'; \
@@ -279,20 +287,21 @@ RUN { \
 # Pre-create mount points so tmpfs/volumes land with correct ownership when
 # the container runs with --read-only:
 #   ~/.cache        -> volume  (dependency + build caches, persistent)
-#   ~/.local/share/pnpm -> volume (pnpm config, global bins, store, persistent)
-#   ~/.config/graphite -> volume (Graphite CLI auth token + cache, persistent)
+#   ~/.local        -> volume (pnpm global bins, shell history, etc persistent)
+#   ~/.config       -> volume (Graphite CLI auth token + cache, persistent)
 #   ~/.omp          -> volume  (omp credentials/config, persistent)
 #   ~/.claude       -> volume  (Claude Code config/credentials, persistent)
-#   ~/.local/state  -> volume  (shell history etc., persistent)
 #   ~/.vscodium-server -> volume (editor remote server, via open-remote-ssh)
 #   ~/.ssh          -> volume  (container-side ssh keys/known_hosts; created
 #                               with chmod 700 in the sshd section above,
 #                               authorized_keys bind-mounted read-only on top)
-#   ~/workspace     -> bind    (your projects, the only host path exposed)
+#   ~/workspace     -> volume  (container-private workspace + pnpm store,
+#                               persistent, never exposed to the host)
+#   ~/shared        -> bind    (the only host path exposed)
 # ---------------------------------------------------------------------------
-RUN mkdir -p ~/.cache ~/.local/share/pnpm ~/.config/graphite ~/.omp ~/.claude ~/.local/state ~/.vscodium-server ~/workspace
+RUN mkdir -p ~/.cache ~/.local ~/.config ~/.omp ~/.claude ~/.vscodium-server ~/.ssh ~/workspace ~/shared 
 
-WORKDIR /home/${USERNAME}/workspace
+WORKDIR /home/${USERNAME}/shared
 
 # Start sshd (non-fatal) around the requested command; default: login zsh
 ENTRYPOINT ["/usr/local/bin/devbox-entrypoint"]
