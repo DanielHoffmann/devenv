@@ -9,8 +9,8 @@
 #   - mount points pre-created for tmpfs/volumes (~/.cache, ~/.omp, state)
 #
 # Base: Ubuntu 24.04
-# Runtimes (all optional, see ARGs): Node.js, pnpm, nx, Rust, Go, Zig —
-#   default "latest", pin with a version, disable with "false".
+# Runtimes/tools (all optional, see ARGs): Node.js, pnpm, nx, Graphite CLI,
+#   Rust, Go, Zig — default "latest", pin with a version, disable with "false".
 # Shell: zsh + oh-my-zsh
 # Agent harnesses (optional): omp (oh-my-pi), Claude Code
 
@@ -27,10 +27,12 @@ ARG USERNAME=devbox
 #   "false"             -> do not install
 # Unversioned components (installer-managed) take "true" (default) / "false":
 #   OMP_INSTALL. CLAUDE_CODE_VERSION additionally accepts a version.
-# Notes: PNPM/NX require NODE_VERSION != false (build fails loudly otherwise).
+# Notes: PNPM/NX/GRAPHITE require NODE_VERSION != false (build fails loudly
+# otherwise).
 ARG NODE_VERSION=latest
 ARG PNPM_VERSION=latest
 ARG NX_VERSION=latest
+ARG GRAPHITE_VERSION=latest
 ARG RUST_VERSION=latest
 ARG GO_VERSION=latest
 ARG ZIG_VERSION=latest
@@ -128,15 +130,15 @@ RUN if [ "${RUST_VERSION}" = "false" ]; then echo "skipping rust"; exit 0; fi \
  && /usr/local/cargo/bin/rustc --version
 
 # ---------------------------------------------------------------------------
-# Node.js (official tarball into /usr/local) + pnpm and nx via npm.
+# Node.js (official tarball into /usr/local) + pnpm, nx and Graphite via npm.
 # NOTE: npm -g here runs BEFORE the NPM_CONFIG_PREFIX env below, so these land
 # in /usr/local (real image content). Anything npm-globally installed AFTER
 # that env would go into ~/.cache and be shadowed by the cache volume.
 # ---------------------------------------------------------------------------
 RUN if [ "${NODE_VERSION}" = "false" ]; then \
-      if [ "${PNPM_VERSION}" != "false" ] || [ "${NX_VERSION}" != "false" ]; then \
-        echo "ERROR: PNPM_VERSION/NX_VERSION require NODE_VERSION != false" >&2; exit 1; \
-      fi; echo "skipping node/pnpm/nx"; exit 0; \
+      if [ "${PNPM_VERSION}" != "false" ] || [ "${NX_VERSION}" != "false" ] || [ "${GRAPHITE_VERSION}" != "false" ]; then \
+        echo "ERROR: PNPM_VERSION/NX_VERSION/GRAPHITE_VERSION require NODE_VERSION != false" >&2; exit 1; \
+      fi; echo "skipping node/pnpm/nx/graphite"; exit 0; \
     fi \
  && arch="$(dpkg --print-architecture)" \
  && case "$arch" in amd64) narch=x64 ;; arm64) narch=arm64 ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
@@ -150,7 +152,12 @@ RUN if [ "${NODE_VERSION}" = "false" ]; then \
     | tar -xJ -C /usr/local --strip-components=1 --no-same-owner \
  && node --version \
  && if [ "${PNPM_VERSION}" != "false" ]; then npm install -g "pnpm@${PNPM_VERSION}" && pnpm --version; fi \
- && if [ "${NX_VERSION}" != "false" ]; then npm install -g "nx@${NX_VERSION}" && nx --version; fi
+ && if [ "${NX_VERSION}" != "false" ]; then npm install -g "nx@${NX_VERSION}" && nx --version; fi \
+ # Graphite recommends its "stable" npm dist-tag; map "latest" onto it
+ && if [ "${GRAPHITE_VERSION}" != "false" ]; then \
+      gtver="${GRAPHITE_VERSION}"; [ "$gtver" = "latest" ] && gtver="stable"; \
+      npm install -g "@withgraphite/graphite-cli@${gtver}" && gt --version; \
+    fi
 
 # ---------------------------------------------------------------------------
 # Non-root user with zsh as login shell — NO sudo. The image is immutable at
@@ -205,14 +212,15 @@ RUN mkdir -p ~/.ssh ~/.config/sshd && chmod 700 ~/.ssh \
 # oh-my-zsh
 # ---------------------------------------------------------------------------
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended \
- && sed -i 's/^ZSH_THEME=.*/ZSH_THEME="robbyrussell"/' ~/.zshrc
+ && sed -i 's/^ZSH_THEME=.*/ZSH_THEME="af-magic"/' ~/.zshrc
 
 # ---------------------------------------------------------------------------
 # PATH for the devbox user: user bins, then the system toolchains.
 # Redirect every package manager that doesn't respect ~/.cache into it, so a
 # single persistent cache volume covers them all under the read-only rootfs:
-#   cargo: registry + `cargo install` bins    npm:  cache + -g prefix
-#   go:    module cache + `go install` bins   pnpm: global bins (store: below)
+#   cargo: registry + `cargo install` bins
+#   npm: cache + -g prefix
+#   go:    module cache + `go install` bins
 # (RUSTUP_HOME stays at /usr/local/rustup so the cargo/rustc proxies find the
 #  baked toolchain; CARGO_HOME below only relocates the user's cargo data.)
 # ---------------------------------------------------------------------------
@@ -221,18 +229,8 @@ ENV CARGO_HOME=/home/${USERNAME}/.cache/cargo \
     GOPATH=/home/${USERNAME}/.cache/go \
     NPM_CONFIG_CACHE=/home/${USERNAME}/.cache/npm \
     NPM_CONFIG_PREFIX=/home/${USERNAME}/.cache/npm-global \
-    PNPM_HOME=/home/${USERNAME}/.cache/pnpm
+    PNPM_HOME=/home/${USERNAME}/.local/share/pnpm
 ENV PATH="/home/${USERNAME}/.local/bin:${CARGO_HOME}/bin:${GOPATH}/bin:${NPM_CONFIG_PREFIX}/bin:${PNPM_HOME}:/usr/local/cargo/bin:/usr/local/go/bin:${PATH}"
-
-# pnpm store lives INSIDE the workspace mount (~/workspace/.pnpm-store), not in
-# the cache volume: hard links cannot cross mounts, so keeping the store and
-# node_modules on the same mount preserves pnpm's link-based installs. Mount a
-# PARENT directory containing your projects as ~/workspace and every project
-# shares one deduplicated store, persisted on the host.
-# (Written to ~/.config/pnpm/rc, baked into the image.)
-RUN if command -v pnpm >/dev/null; then \
-      pnpm config set store-dir /home/${USERNAME}/workspace/.pnpm-store; \
-    else echo "pnpm not installed; skipping store config"; fi
 
 # ---------------------------------------------------------------------------
 # omp (oh-my-pi) — AI coding agent / harness, via its official installer
@@ -281,13 +279,18 @@ RUN { \
 # Pre-create mount points so tmpfs/volumes land with correct ownership when
 # the container runs with --read-only:
 #   ~/.cache        -> volume  (dependency + build caches, persistent)
+#   ~/.local/share/pnpm -> volume (pnpm config, global bins, store, persistent)
+#   ~/.config/graphite -> volume (Graphite CLI auth token + cache, persistent)
 #   ~/.omp          -> volume  (omp credentials/config, persistent)
 #   ~/.claude       -> volume  (Claude Code config/credentials, persistent)
 #   ~/.local/state  -> volume  (shell history etc., persistent)
 #   ~/.vscodium-server -> volume (editor remote server, via open-remote-ssh)
+#   ~/.ssh          -> volume  (container-side ssh keys/known_hosts; created
+#                               with chmod 700 in the sshd section above,
+#                               authorized_keys bind-mounted read-only on top)
 #   ~/workspace     -> bind    (your projects, the only host path exposed)
 # ---------------------------------------------------------------------------
-RUN mkdir -p ~/.cache ~/.omp ~/.claude ~/.local/state ~/.vscodium-server ~/workspace
+RUN mkdir -p ~/.cache ~/.local/share/pnpm ~/.config/graphite ~/.omp ~/.claude ~/.local/state ~/.vscodium-server ~/workspace
 
 WORKDIR /home/${USERNAME}/workspace
 

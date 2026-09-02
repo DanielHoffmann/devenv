@@ -1,6 +1,6 @@
 # devbox — hardened podman dev environment
 
-A sandboxed development container for running toolchains and coding agents with limited blast radius. Ubuntu 24.04 base with manually installed, system-wide toolchains (Node.js, pnpm, nx, Rust, Go, Zig), zsh + oh-my-zsh, the omp and Claude Code agent CLIs, and a set of everyday CLI tools (jq, git-lfs, ripgrep, fd, fzf, bat, tmux, and friends).
+A sandboxed development container for running toolchains and coding agents with limited blast radius. Ubuntu 24.04 base with manually installed, system-wide toolchains (Node.js, pnpm, nx, Graphite CLI, Rust, Go, Zig), zsh + oh-my-zsh, the omp and Claude Code agent CLIs, and a set of everyday CLI tools (jq, git-lfs, ripgrep, fd, fzf, bat, tmux, and friends).
 
 The container is designed to be run **rootless** with an **immutable root filesystem**, **no capabilities**, and **no privilege escalation path** — see [Security model](#security-model).
 
@@ -57,7 +57,7 @@ devbox (again, elsewhere)    # 2nd+ terminal: opens a shell in the SAME containe
 devbox-build                 # (re)build the image from the current dir
 devbox-stop                  # stop running devbox containers (kills sessions)
 devbox-delete                # remove image + its containers (volumes kept)
-devbox-delete -v             # ... and also remove the devbox-* volumes
+devbox-delete -v             # ... and also remove the image's <image>-* volumes
 ```
 
 ### Editor in the container: minimum steps (VSCodium + open-remote-ssh)
@@ -105,6 +105,7 @@ Every runtime and agent is optional and version-pinnable. `devbox-build` passes 
 | `DEVBOX_NODE_VERSION` | Node.js | version, `latest`, `false` |
 | `DEVBOX_PNPM_VERSION` | pnpm | version, `latest`, `false` |
 | `DEVBOX_NX_VERSION` | nx | version, `latest`, `false` |
+| `DEVBOX_GRAPHITE_VERSION` | Graphite CLI (`gt`) | version, `latest` (installs Graphite's `stable` npm dist-tag), `false` |
 | `DEVBOX_RUST_VERSION` | Rust | version (e.g. `1.94`), `latest`, `false` |
 | `DEVBOX_GO_VERSION` | Go | version, `latest`, `false` |
 | `DEVBOX_ZIG_VERSION` | Zig | version, `latest`, `false` |
@@ -121,31 +122,21 @@ DEVBOX_NODE_VERSION=24.11.0 DEVBOX_PNPM_VERSION=11.0.8 DEVBOX_RUST_VERSION=1.94 
 DEVBOX_RUST_VERSION=false DEVBOX_GO_VERSION=false DEVBOX_ZIG_VERSION=false devbox-build
 ```
 
-Export them in your profile to make a selection permanent. `pnpm`/`nx` require Node (the build fails with a clear error if Node is disabled but they aren't).
+Export them in your profile to make a selection permanent. `pnpm`/`nx`/Graphite require Node (the build fails with a clear error if Node is disabled but they aren't).
 
 All toolchains are installed at build time because the container's root filesystem is read-only at runtime. This is the workflow's central rule: **to add or update a tool, edit the Containerfile and rebuild** — there is deliberately no `sudo apt install` inside a running container. Rebuilds are fast thanks to layer caching.
 
 Toolchain versions are controlled by `ARG`s at the top of the Containerfile — each defaults to the latest release (resolved at build time), can be pinned to an exact version, or disabled with `false`. To match a project's `.tool-versions`/`mise.toml`, set the `DEVBOX_<ARG>` variables (or edit the `ARG` defaults) and rebuild. Note the toolchains are installed system-wide and version managers are not part of the image — a project's `.tool-versions`/`mise.toml` is not enforced inside the container, so keeping the `ARG`s in sync with the projects is a manual responsibility.
 
-## 3. pnpm store and gitignore
+## 4. CLI logins (omp, Claude Code, Graphite)
 
-The image pins pnpm's content-addressable store to `~/workspace/.pnpm-store` (container-side). This keeps the store and every project's `node_modules` on the **same mount**, which is what allows pnpm's hard-linked, deduplicated installs (hard links can't cross mount boundaries). All projects under the workspace share one store, persisted on the host at `~/workspace/.pnpm-store` — the host and container paths mirror each other.
-
-Add it to your global gitignore so a repo never accidentally tracks it:
-
-```sh
-git config --global core.excludesFile ~/.gitignore
-echo '.pnpm-store/' >> ~/.gitignore
-```
-
-## 4. Agent logins (omp, Claude Code)
-
-Each agent's config and credentials live in its own named volume (`devbox-omp`, `devbox-claude`), so you log in once and it persists across containers:
+Each tool's config and credentials live in its own named volume (`<image>-omp`, `<image>-claude`, `<image>-graphite`), so you log in once and it persists across containers:
 
 ```sh
 devbox omp      # then authenticate via /login inside omp
 devbox claude   # follow the login flow (it prints a URL to open on the host;
                 # paste the code back — the container has no browser)
+devbox gt auth  # paste a token from https://app.graphite.dev (Settings → CLI)
 ```
 
 Never bake API keys into the image or mount your host agent config dirs — the volumes keep credentials container-side only.
@@ -194,15 +185,18 @@ Ports outside the range aren't reachable; widen or change the range in `devbox.b
 
 ## Persistent state (named volumes)
 
-Everything outside the workspace mount that needs to survive restarts lives in podman named volumes — container-managed, never host paths:
+Everything outside the workspace mount that needs to survive restarts lives in podman named volumes — container-managed, never host paths. Volumes are named after the image (default `devbox`), so each image tag gets its own independent set:
 
 | Volume | Mounted at | Holds |
 |---|---|---|
-| `devbox-cache` | `~/.cache` | cargo registry + bins, Go module cache + bins, npm cache + globals, pnpm globals |
-| `devbox-omp` | `~/.omp` | omp credentials and config |
-| `devbox-claude` | `~/.claude` | Claude Code credentials and config |
-| `devbox-state` | `~/.local/state` | zsh history, sshd host key, misc state |
-| `devbox-vscodium` | `~/.vscodium-server` | editor remote server + container-side extensions |
+| `<image>-cache` | `~/.cache` | cargo registry + bins, Go module cache + bins, npm cache + globals |
+| `<image>-pnpm` | `~/.local/share/pnpm` | pnpm store, global bins, config |
+| `<image>-graphite` | `~/.config/graphite` | Graphite CLI auth token + cache |
+| `<image>-omp` | `~/.omp` | omp credentials and config |
+| `<image>-claude` | `~/.claude` | Claude Code credentials and config |
+| `<image>-state` | `~/.local/state` | zsh history, sshd host key, misc state |
+| `<image>-vscodium` | `~/.vscodium-server` | editor remote server + container-side extensions |
+| `<image>-ssh` | `~/.ssh` | container-side ssh keys, known_hosts (`authorized_keys` is bind-mounted read-only on top) |
 
 Useful commands: `podman volume ls`, and `podman volume rm devbox-cache` for a clean dependency slate (it regenerates on next use). `/tmp` is a size-capped tmpfs and evaporates every run.
 
@@ -227,7 +221,6 @@ Rules that keep the model intact: never run via `sudo podman`, never add `--priv
 
 ## Troubleshooting
 
-- **pnpm falls back to copying instead of hard links** — you ran pnpm outside `/workspace` scope or the store dir moved; verify `pnpm config get store-dir` prints `/home/devbox/workspace/.pnpm-store` inside the container.
 - **Editor fails to connect over SSH** — first check plain `ssh devbox` from a terminal. Container not running → start `devbox`. Connection refused → sshd didn't start; check `/tmp/sshd.log` inside the container. Auth failure → verify the keypair exists (`~/.ssh/devbox_ed25519`) and the container was started by the current `devbox` (`podman inspect devbox` should show the `authorized_keys` mount). If `cat ~/.ssh/authorized_keys` *inside* the container gives permission denied, that's the SELinux signature of an unlabeled mount — restart with the current `devbox`, which mounts a labeled copy. Host-key warning after `devbox-delete -v` → the host key lived on the deleted state volume; clear `~/.ssh/known_hosts_devbox`. Server install issues → `podman volume rm devbox-vscodium` for a fresh install.
 - **Permission denied writing to ~/workspace in the container, or wrong ownership** — the `devbox` function must run with `--userns=keep-id:uid=1000,gid=1000` (already present). Without it, rootless podman's default mapping makes mounted files appear root-owned inside the container, and the unprivileged `devbox` user cannot write them.
 - **Network failures inside builds** — corporate proxies/DNS: pass `--network=host` to `podman build` only (build-time, not runtime) or configure proxy env via `--build-arg`.

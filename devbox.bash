@@ -1,8 +1,7 @@
 # devbox — hardened podman dev container launcher
 # bash- and zsh-compatible; source this file from ~/.zshrc (or ~/.bash_profile).
 # Mounts the PARENT directory holding your projects at ~/workspace in the
-# container (pnpm store lives at ~/workspace/.pnpm-store — add .pnpm-store/
-# to your global gitignore).
+# container.
 # Fallback defaults via env: DEVBOX_IMAGE, DEVBOX_PROJECT
 devbox() {
   local image="${DEVBOX_IMAGE:-devbox}"
@@ -85,18 +84,26 @@ devbox() {
     `# workspace (parent of your projects): the ONLY host path exposed` \
     -v "${project}:/home/devbox/workspace:Z" \
     `# named volumes (container-managed, not host paths):` \
-    `#   dependency & build caches (cargo registry, go modules, npm, pnpm bins)` \
-    -v devbox-cache:/home/devbox/.cache \
-    `#   omp credentials survive restarts; log in once with: omp /login` \
-    -v devbox-omp:/home/devbox/.omp \
-    `#   Claude Code config/credentials; log in once with: claude` \
-    -v devbox-claude:/home/devbox/.claude \
-    `#   shell history and misc state (also holds the sshd host key)` \
-    -v devbox-state:/home/devbox/.local/state \
-    `#   editor remote server (open-remote-ssh installs it here)` \
-    -v devbox-vscodium:/home/devbox/.vscodium-server \
+    -v "${image}-cache:/home/devbox/.cache" \
+    `# pnpm home: config, global bins, content-addressable store` \
+    -v "${image}-pnpm:/home/devbox/.local/share/pnpm" \
+    `# Graphite CLI auth token + cache; log in once with: gt auth` \
+    -v "${image}-graphite:/home/devbox/.config/graphite" \
+    `# omp credentials survive restarts; log in once with: omp /login` \
+    -v "${image}-omp:/home/devbox/.omp" \
+    `# Claude Code config/credentials; log in once with: claude` \
+    -v "${image}-claude:/home/devbox/.claude" \
+    `# shell history and misc state (also holds the sshd host key)` \
+    -v "${image}-state:/home/devbox/.local/state" \
+    `# editor remote server (open-remote-ssh installs it here)` \
+    -v "${image}-vscodium:/home/devbox/.vscodium-server" \
+    `# ssh keys generated INSIDE the container (plus known_hosts, config);` \
+    `# never sees the host's ~/.ssh` \
+    -v "${image}-ssh:/home/devbox/.ssh" \
     `# public half of the devbox keypair, for sshd key auth (read-only,` \
-    `# SELinux-labeled; a copy in ~/.config/devbox, never ~/.ssh itself)` \
+    `# SELinux-labeled; a copy in ~/.config/devbox, never ~/.ssh itself).` \
+    `# Mounted INTO the ssh volume above (podman orders mounts by path depth),` \
+    `# so login keys stay host-controlled while the rest of ~/.ssh is writable` \
     -v "${akeys}:/home/devbox/.ssh/authorized_keys:ro,Z" \
     `# --- network: dev servers reachable at http://localhost:PORT ---` \
     `# bound to 127.0.0.1 so they are NOT exposed to your LAN` \
@@ -140,7 +147,7 @@ devbox-build() {
   # (indirection via eval: portable across bash and zsh; names come from the
   #  fixed list below, never user input)
   local build_args=() var arg val
-  for arg in NODE_VERSION PNPM_VERSION NX_VERSION RUST_VERSION GO_VERSION ZIG_VERSION OMP_INSTALL CLAUDE_CODE_VERSION; do
+  for arg in NODE_VERSION PNPM_VERSION NX_VERSION GRAPHITE_VERSION RUST_VERSION GO_VERSION ZIG_VERSION OMP_INSTALL CLAUDE_CODE_VERSION; do
     var="DEVBOX_${arg}"
     eval "val=\${${var}:-}"
     if [[ -n "$val" ]]; then
@@ -178,7 +185,8 @@ devbox-stop() {
 }
 
 # devbox-delete — remove the devbox image and any containers created from it.
-# Named volumes (caches, omp credentials, state) are KEPT unless -v is given.
+# Named volumes (caches, credentials, container-side ssh keys, state) are
+# KEPT unless -v is given.
 devbox-delete() {
   local image="${DEVBOX_IMAGE:-devbox}"
   local rm_volumes=0
@@ -188,7 +196,7 @@ devbox-delete() {
     case "$opt" in
       i) image="$OPTARG" ;;
       v) rm_volumes=1 ;;
-      h) echo "usage: devbox-delete [-i image] [-v: also remove devbox-* volumes]" >&2; return 0 ;;
+      h) echo "usage: devbox-delete [-i image] [-v: also remove the image's <image>-* volumes]" >&2; return 0 ;;
       \?) echo "devbox-delete: unknown option -$OPTARG (use -h)" >&2; return 2 ;;
       :) echo "devbox-delete: option -$OPTARG requires an argument" >&2; return 2 ;;
     esac
@@ -200,7 +208,7 @@ devbox-delete() {
 
   local summary="image '$image'"
   [[ -n "$containers" ]] && summary+=", $(wc -w <<<"$containers") container(s)"
-  (( rm_volumes )) && summary+=", devbox-* volumes"
+  (( rm_volumes )) && summary+=", ${image}-* volumes"
   echo "Will remove: $summary"
   local answer
   printf 'Proceed? [y/N] '
@@ -214,6 +222,10 @@ devbox-delete() {
   podman image exists "$image" && podman rmi "$image"
 
   if (( rm_volumes )); then
-    podman volume ls -q | grep -E '^devbox-' | xargs -r podman volume rm
+    # volumes are named ${image}-<suffix> by devbox(); escape '.' so the
+    # image name is matched literally (volume names only allow [a-zA-Z0-9_.-])
+    local pattern
+    pattern="$(printf '%s' "$image" | sed 's/\./\\./g')"
+    podman volume ls -q | grep -E "^${pattern}-" | xargs -r podman volume rm
   fi
 }
