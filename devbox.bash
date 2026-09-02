@@ -1,4 +1,5 @@
 # devbox — hardened podman dev container launcher
+# bash- and zsh-compatible; source this file from ~/.zshrc (or ~/.bash_profile).
 # Mounts the PARENT directory holding your projects at ~/workspace in the
 # container (pnpm store lives at ~/workspace/.pnpm-store — add .pnpm-store/
 # to your global gitignore).
@@ -88,6 +89,8 @@ devbox() {
     -v devbox-cache:/home/devbox/.cache \
     `#   omp credentials survive restarts; log in once with: omp /login` \
     -v devbox-omp:/home/devbox/.omp \
+    `#   Claude Code config/credentials; log in once with: claude` \
+    -v devbox-claude:/home/devbox/.claude \
     `#   shell history and misc state (also holds the sshd host key)` \
     -v devbox-state:/home/devbox/.local/state \
     `#   editor remote server (open-remote-ssh installs it here)` \
@@ -108,6 +111,10 @@ devbox() {
 
 # devbox-build — (re)build the devbox image
 # Containerfile location: arg > current dir
+# Component selection via env: DEVBOX_<ARG> for any build ARG of the image,
+# e.g. DEVBOX_NODE_VERSION, DEVBOX_RUST_VERSION, DEVBOX_OMP_INSTALL — the
+# prefix is dropped and the rest passed through as --build-arg verbatim.
+# Unset variables leave the Containerfile defaults in effect.
 devbox-build() {
   local image="${DEVBOX_IMAGE:-devbox}"
   local src="$PWD"
@@ -128,7 +135,20 @@ devbox-build() {
     echo "devbox-build: no Containerfile in: $src (pass a dir containing one)" >&2
     return 1
   fi
-  podman build -t "$image" "$src"
+
+  # DEVBOX_<ARG> env vars -> --build-arg <ARG>=<value>, names passed through
+  # (indirection via eval: portable across bash and zsh; names come from the
+  #  fixed list below, never user input)
+  local build_args=() var arg val
+  for arg in NODE_VERSION PNPM_VERSION NX_VERSION RUST_VERSION GO_VERSION ZIG_VERSION OMP_INSTALL CLAUDE_CODE_VERSION; do
+    var="DEVBOX_${arg}"
+    eval "val=\${${var}:-}"
+    if [[ -n "$val" ]]; then
+      build_args+=(--build-arg "${arg}=${val}")
+    fi
+  done
+
+  podman build "${build_args[@]}" -t "$image" "$src"
 }
 
 # devbox-stop — stop all running containers of the devbox image.
@@ -183,7 +203,8 @@ devbox-delete() {
   (( rm_volumes )) && summary+=", devbox-* volumes"
   echo "Will remove: $summary"
   local answer
-  read -r -p "Proceed? [y/N] " answer
+  printf 'Proceed? [y/N] '
+  read -r answer
   [[ "$answer" == [yY]* ]] || { echo "aborted"; return 1; }
 
   if [[ -n "$containers" ]]; then

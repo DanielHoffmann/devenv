@@ -1,6 +1,6 @@
 # devbox — hardened podman dev environment
 
-A sandboxed development container for running toolchains and the [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi) coding agent with limited blast radius. Ubuntu 24.04 base with manually installed, system-wide toolchains (Node.js 24, pnpm 11, nx, Rust 1.94, .NET 9, Go, Zig — pinned via `ARG`s at the top of the Containerfile), zsh + oh-my-zsh, and a set of everyday CLI tools (jq, git-lfs, ripgrep, fd, fzf, bat, tmux, and friends).
+A sandboxed development container for running toolchains and coding agents with limited blast radius. Ubuntu 24.04 base with manually installed, system-wide toolchains (Node.js, pnpm, nx, Rust, Go, Zig), zsh + oh-my-zsh, the omp and Claude Code agent CLIs, and a set of everyday CLI tools (jq, git-lfs, ripgrep, fd, fzf, bat, tmux, and friends).
 
 The container is designed to be run **rootless** with an **immutable root filesystem**, **no capabilities**, and **no privilege escalation path** — see [Security model](#security-model).
 
@@ -9,7 +9,7 @@ The container is designed to be run **rootless** with an **immutable root filesy
 | File | Purpose | Goes where |
 |---|---|---|
 | `Containerfile` | The image definition | anywhere you build from |
-| `devbox.bash` | `devbox`, `devbox-build`, `devbox-delete` shell functions | sourced from `~/.bash_profile` |
+| `devbox.bash` | `devbox`, `devbox-build`, `devbox-stop`, `devbox-delete` shell functions | sourced from `~/.zshrc` |
 
 ## Prerequisites
 
@@ -17,31 +17,33 @@ The container is designed to be run **rootless** with an **immutable root filesy
 - Subordinate UID/GID ranges for your user (most distro packages set this up; check that `grep $USER /etc/subuid` returns a line).
 - A parent directory that holds (or will hold) your projects. These instructions assume `~/workspace`; substitute your own throughout.
 
-## 1. Build the image
+## 1. Install the shell functions
+
+From the directory containing `devbox.bash`, add a source line to your `~/.zshrc` and reload:
 
 ```sh
-podman build -t devbox .
+echo "source $PWD/devbox.bash" >> ~/.zshrc
+source ~/.zshrc
 ```
 
-or, once the shell functions are installed (step 2), just `devbox-build` — it builds from the current directory, or from a directory passed as an argument.
-
-All toolchains are installed at build time because the container's root filesystem is read-only at runtime. This is the workflow's central rule: **to add or update a tool, edit the Containerfile and rebuild** — there is deliberately no `sudo apt install` inside a running container. Rebuilds are fast thanks to layer caching.
-
-Toolchain versions are pinned as `ARG`s at the top of the Containerfile, matching the projects' `.tool-versions`/`mise.toml`; go and zig are pinned to a recent release and updated manually. When a project bumps a pin, update the `ARG` and rebuild. Note the toolchains are installed system-wide and version managers are not part of the image — a project's `.tool-versions`/`mise.toml` is not enforced inside the container, so keeping the `ARG`s in sync with the projects is a manual responsibility.
-
-## 2. Install the shell functions
-
-Append the contents of `devbox.bash` to your `~/.bash_profile` (or keep the file somewhere and source it):
-
-```sh
-cat devbox.bash >> ~/.bash_profile
-source ~/.bash_profile
-```
+(Keeping the file in place and sourcing it — rather than copy-pasting its contents — means later updates to the file take effect on the next shell. The functions are bash- and zsh-compatible.)
 
 Then adjust the default workspace if yours isn't `~/workspace` — either edit the `DEVBOX_PROJECT` default inside the function, or export it in your profile:
 
 ```sh
 export DEVBOX_PROJECT="$HOME/code"
+```
+
+Build the image (from the directory containing the `Containerfile`):
+
+```sh
+devbox-build
+```
+
+and start the container:
+
+```sh
+devbox
 ```
 
 Usage (`-h` prints this too):
@@ -58,6 +60,29 @@ devbox-delete                # remove image + its containers (volumes kept)
 devbox-delete -v             # ... and also remove the devbox-* volumes
 ```
 
+### Editor in the container: minimum steps (VSCodium + open-remote-ssh)
+
+The four steps from zero to an editor whose terminal, language servers, and extensions all run inside the container (background and troubleshooting in step 5 below):
+
+1. Install [VSCodium](https://vscodium.com) (distro package, Flatpak, or the release tarball).
+2. In VSCodium, install the **Open Remote - SSH** extension (`jeanp413.open-remote-ssh`, on Open VSX).
+3. Add this to `~/.ssh/config` (details on each line in step 5):
+
+   ```
+   Host devbox
+       HostName 127.0.0.1
+       Port 2222
+       User devbox
+       IdentityFile ~/.ssh/devbox_ed25519
+       IdentitiesOnly yes
+       UserKnownHostsFile ~/.ssh/known_hosts_devbox
+       StrictHostKeyChecking accept-new
+   ```
+
+4. With the container running (`devbox` in any terminal): command palette → **"Remote-SSH: Connect to Host..." → devbox**, then open `/home/devbox/workspace`.
+
+First connect downloads the editor's remote server into the container (needs a minute and network); install language extensions "in the remote" when prompted. Sanity check when anything fails: `ssh devbox` from a terminal.
+
 ### Multiple terminals
 
 `devbox` keeps **one shared container per image name**: the first invocation creates and owns it; every further `devbox` (or `devbox some-command`) from any terminal opens an additional shell/process in that same container via `podman exec` — shared filesystem, processes, and ports.
@@ -70,6 +95,38 @@ Because mounts and ports are fixed when a container starts, `-p` on an attach is
 
 Container shells also source `~/workspace/.zshrc` (i.e. `<workspace>/.zshrc` on the host — `devbox` creates it empty on first run). Since the container's own `~/.zshrc` is read-only image content, this file is the place for aliases, env vars, and prompt tweaks that should survive rebuilds without baking them into the image. It loads after the image's config, so it can override anything. Edit it from either side; changes apply to new shells.
 
+
+## 2. Selecting components and versions
+
+Every runtime and agent is optional and version-pinnable. `devbox-build` passes `DEVBOX_<ARG>` environment variables straight through as the Containerfile's build args — the variable name is the build arg name with a `DEVBOX_` prefix, nothing else to remember. Unset variables leave the defaults (latest / installed) in effect:
+
+| Variable | Component | Values |
+|---|---|---|
+| `DEVBOX_NODE_VERSION` | Node.js | version, `latest`, `false` |
+| `DEVBOX_PNPM_VERSION` | pnpm | version, `latest`, `false` |
+| `DEVBOX_NX_VERSION` | nx | version, `latest`, `false` |
+| `DEVBOX_RUST_VERSION` | Rust | version (e.g. `1.94`), `latest`, `false` |
+| `DEVBOX_GO_VERSION` | Go | version, `latest`, `false` |
+| `DEVBOX_ZIG_VERSION` | Zig | version, `latest`, `false` |
+| `DEVBOX_OMP_INSTALL` | omp agent | `true`, `false` |
+| `DEVBOX_CLAUDE_CODE_VERSION` | Claude Code agent | version, `latest`, `false` |
+
+Examples:
+
+```sh
+# match a project's .tool-versions
+DEVBOX_NODE_VERSION=24.11.0 DEVBOX_PNPM_VERSION=11.0.8 DEVBOX_RUST_VERSION=1.94 devbox-build
+
+# lean JS-only image
+DEVBOX_RUST_VERSION=false DEVBOX_GO_VERSION=false DEVBOX_ZIG_VERSION=false devbox-build
+```
+
+Export them in your profile to make a selection permanent. `pnpm`/`nx` require Node (the build fails with a clear error if Node is disabled but they aren't).
+
+All toolchains are installed at build time because the container's root filesystem is read-only at runtime. This is the workflow's central rule: **to add or update a tool, edit the Containerfile and rebuild** — there is deliberately no `sudo apt install` inside a running container. Rebuilds are fast thanks to layer caching.
+
+Toolchain versions are controlled by `ARG`s at the top of the Containerfile — each defaults to the latest release (resolved at build time), can be pinned to an exact version, or disabled with `false`. To match a project's `.tool-versions`/`mise.toml`, set the `DEVBOX_<ARG>` variables (or edit the `ARG` defaults) and rebuild. Note the toolchains are installed system-wide and version managers are not part of the image — a project's `.tool-versions`/`mise.toml` is not enforced inside the container, so keeping the `ARG`s in sync with the projects is a manual responsibility.
+
 ## 3. pnpm store and gitignore
 
 The image pins pnpm's content-addressable store to `~/workspace/.pnpm-store` (container-side). This keeps the store and every project's `node_modules` on the **same mount**, which is what allows pnpm's hard-linked, deduplicated installs (hard links can't cross mount boundaries). All projects under the workspace share one store, persisted on the host at `~/workspace/.pnpm-store` — the host and container paths mirror each other.
@@ -81,19 +138,21 @@ git config --global core.excludesFile ~/.gitignore
 echo '.pnpm-store/' >> ~/.gitignore
 ```
 
-## 4. omp (agent) login
+## 4. Agent logins (omp, Claude Code)
 
-omp's config and credentials live in the `devbox-omp` named volume, so you log in once and it persists across containers:
+Each agent's config and credentials live in its own named volume (`devbox-omp`, `devbox-claude`), so you log in once and it persists across containers:
 
 ```sh
-devbox omp   # then authenticate via /login inside omp
+devbox omp      # then authenticate via /login inside omp
+devbox claude   # follow the login flow (it prints a URL to open on the host;
+                # paste the code back — the container has no browser)
 ```
 
-Never bake API keys into the image or mount your host `~/.omp` — the volume keeps credentials container-side only.
+Never bake API keys into the image or mount your host agent config dirs — the volumes keep credentials container-side only.
 
 ## 5. Editor integration (open-remote-ssh)
 
-Language servers for Rust/Go/Zig/.NET need the container's toolchains and caches, so the editor connects *into* the running container over SSH using [Open Remote - SSH](https://github.com/jeanp413/open-remote-ssh) (`jeanp413.open-remote-ssh`, on Open VSX — the open Remote-SSH implementation for VSCodium).
+Language servers for Rust/Go/Zig need the container's toolchains and caches, so the editor connects *into* the running container over SSH using [Open Remote - SSH](https://github.com/jeanp413/open-remote-ssh) (`jeanp413.open-remote-ssh`, on Open VSX — the open Remote-SSH implementation for VSCodium).
 
 How the plumbing works: the image runs a user-level `sshd` on port 2222 (key-auth only, published to `127.0.0.1` on the host). `devbox` generates a dedicated keypair `~/.ssh/devbox_ed25519` on first run and mounts its public half as the container's `authorized_keys` (via an SELinux-labeled copy in `~/.config/devbox/` — mounting from `~/.ssh` directly would either be unreadable in the container on SELinux hosts, or require relabeling `~/.ssh`; both bad). The sshd host key persists on the `devbox-state` volume, so the container's identity is stable across restarts. The editor's remote server installs into the `devbox-vscodium` volume.
 
@@ -115,7 +174,7 @@ Host devbox
 
 Why the non-obvious lines: `IdentitiesOnly yes` stops ssh from offering every key in your agent first — with several keys loaded, sshd's auth-attempt limit can reject the connection before the right key is tried. The separate `UserKnownHostsFile` keeps the container's host key out of your main `known_hosts`; after `devbox-delete -v` (which deletes the state volume holding the host key), just remove that one file. `StrictHostKeyChecking accept-new` trusts the key on first connect but still errors if it later changes.
 
-Daily use: start the container (`devbox` in any terminal — the SSH daemon starts with it), then in the editor: **"Remote-SSH: Connect to Host..." → devbox**, and open `/home/devbox/workspace`. The extension reads the same `~/.ssh/config`, so no extension-side host configuration is needed. Install rust-analyzer, gopls, the Zig and C# extensions *in the remote* when prompted — they run container-side with the container's toolchains. Plain `ssh devbox` from a terminal exercises the identical path, which makes it the first diagnostic: if it works and the editor doesn't, the problem is extension setup (usually the `argv.json` step or a missed editor restart), not SSH.
+Daily use: start the container (`devbox` in any terminal — the SSH daemon starts with it), then in the editor: **"Remote-SSH: Connect to Host..." → devbox**, and open `/home/devbox/workspace`. The extension reads the same `~/.ssh/config`, so no extension-side host configuration is needed. Install rust-analyzer, gopls, and the Zig extension *in the remote* when prompted — they run container-side with the container's toolchains. Plain `ssh devbox` from a terminal exercises the identical path, which makes it the first diagnostic: if it works and the editor doesn't, the problem is extension setup (usually the `argv.json` step or a missed editor restart), not SSH.
 
 Notes:
 
@@ -141,6 +200,7 @@ Everything outside the workspace mount that needs to survive restarts lives in p
 |---|---|---|
 | `devbox-cache` | `~/.cache` | cargo registry + bins, Go module cache + bins, npm cache + globals, pnpm globals |
 | `devbox-omp` | `~/.omp` | omp credentials and config |
+| `devbox-claude` | `~/.claude` | Claude Code credentials and config |
 | `devbox-state` | `~/.local/state` | zsh history, sshd host key, misc state |
 | `devbox-vscodium` | `~/.vscodium-server` | editor remote server + container-side extensions |
 

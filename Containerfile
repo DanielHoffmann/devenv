@@ -9,28 +9,33 @@
 #   - mount points pre-created for tmpfs/volumes (~/.cache, ~/.omp, state)
 #
 # Base: Ubuntu 24.04
-# Runtimes (installed manually, system-wide): Node.js 24, pnpm 11, Rust 1.94,
-#   .NET 9, Go, Zig. Update the ARG pins below and rebuild to bump.
+# Runtimes (all optional, see ARGs): Node.js, pnpm, nx, Rust, Go, Zig —
+#   default "latest", pin with a version, disable with "false".
 # Shell: zsh + oh-my-zsh
-# Agent harness: omp (oh-my-pi)
+# Agent harnesses (optional): omp (oh-my-pi), Claude Code
 
 FROM docker.io/library/ubuntu:24.04
 
 ARG USERNAME=devbox
 
-# --- toolchain version pins ---------------------------------------------
-# node/pnpm/rust/dotnet match the projects' .tool-versions / mise.toml;
-# go/zig track latest (update manually).
-# NOTE: .NET 9 is an STS release, end-of-life since May 2026 (no more security
-# patches, and dropped from the Ubuntu archive — hence the install script
-# below). Ubuntu's apt carries dotnet-sdk-8.0 / dotnet-sdk-10.0 (LTS) if the
-# projects ever move.
-ARG DOTNET_CHANNEL=9.0
-ARG NODE_VERSION=24.11.0
-ARG PNPM_VERSION=11.0.8
-ARG RUST_VERSION=1.94
-ARG GO_VERSION=1.26.7
-ARG ZIG_VERSION=0.16.0
+# --- optional components ---------------------------------------------------
+# Every runtime/agent below is opt-out and (where meaningful) version-pinnable
+# via these ARGs (override at build: podman build --build-arg NODE_VERSION=24.11.0 .):
+#   "latest" (default)  -> newest release, resolved at build time
+#   "<version>"         -> that exact version (e.g. NODE_VERSION=24.11.0,
+#                          RUST_VERSION=1.94, ZIG_VERSION=0.16.0)
+#   "false"             -> do not install
+# Unversioned components (installer-managed) take "true" (default) / "false":
+#   OMP_INSTALL. CLAUDE_CODE_VERSION additionally accepts a version.
+# Notes: PNPM/NX require NODE_VERSION != false (build fails loudly otherwise).
+ARG NODE_VERSION=latest
+ARG PNPM_VERSION=latest
+ARG NX_VERSION=latest
+ARG RUST_VERSION=latest
+ARG GO_VERSION=latest
+ARG ZIG_VERSION=latest
+ARG OMP_INSTALL=true
+ARG CLAUDE_CODE_VERSION=latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -58,8 +63,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux htop vim nano rsync \
     # misc
     locales procps \
-    # .NET runtime dependency (the SDK is installed via script below)
-    libicu74 \
     python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
@@ -75,33 +78,36 @@ RUN ln -sf "$(command -v fdfind)" /usr/local/bin/fd \
 # ---------------------------------------------------------------------------
 # Go (official tarball into /usr/local/go)
 # ---------------------------------------------------------------------------
-RUN arch="$(dpkg --print-architecture)" \
- && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" \
+RUN if [ "${GO_VERSION}" = "false" ]; then echo "skipping go"; exit 0; fi \
+ && arch="$(dpkg --print-architecture)" \
+ && if [ "${GO_VERSION}" = "latest" ]; then \
+      gofile="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"; \
+    else \
+      gofile="go${GO_VERSION}"; \
+    fi \
+ && [ -n "$gofile" ] || { echo "go version resolution failed" >&2; exit 1; } \
+ && curl -fsSL "https://go.dev/dl/${gofile}.linux-${arch}.tar.gz" \
     | tar -xz -C /usr/local \
  && /usr/local/go/bin/go version
 
 # ---------------------------------------------------------------------------
 # Zig (official tarball into /usr/local/zig, symlinked onto PATH)
 # ---------------------------------------------------------------------------
-RUN arch="$(dpkg --print-architecture)" \
+RUN if [ "${ZIG_VERSION}" = "false" ]; then echo "skipping zig"; exit 0; fi \
+ && arch="$(dpkg --print-architecture)" \
  && case "$arch" in amd64) zarch=x86_64 ;; arm64) zarch=aarch64 ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
+ && if [ "${ZIG_VERSION}" = "latest" ]; then \
+      zver="$(curl -fsSL https://ziglang.org/download/index.json \
+              | jq -r '[keys[] | select(. != "master")] | sort_by(split(".") | map(tonumber)) | last')"; \
+    else \
+      zver="${ZIG_VERSION}"; \
+    fi \
+ && [ -n "$zver" ] || { echo "zig version resolution failed" >&2; exit 1; } \
  && mkdir -p /usr/local/zig \
- && curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${zarch}-linux-${ZIG_VERSION}.tar.xz" \
+ && curl -fsSL "https://ziglang.org/download/${zver}/zig-${zarch}-linux-${zver}.tar.xz" \
     | tar -xJ -C /usr/local/zig --strip-components=1 \
  && ln -s /usr/local/zig/zig /usr/local/bin/zig \
  && zig version
-
-# ---------------------------------------------------------------------------
-# .NET SDK via Microsoft's official dotnet-install script (channel pinned
-# above). Not apt: Ubuntu's archive only carries in-support .NET versions
-# (currently 8 and 10), and 9 has been dropped since its May 2026 EOL.
-# ---------------------------------------------------------------------------
-ENV DOTNET_ROOT=/usr/local/dotnet \
-    DOTNET_CLI_TELEMETRY_OPTOUT=1
-RUN curl -fsSL https://dot.net/v1/dotnet-install.sh \
-    | bash -s -- --channel "${DOTNET_CHANNEL}" --install-dir "${DOTNET_ROOT}" \
- && ln -s "${DOTNET_ROOT}/dotnet" /usr/local/bin/dotnet \
- && dotnet --version
 
 # ---------------------------------------------------------------------------
 # Rust via rustup, system-wide (the official rust image layout):
@@ -111,10 +117,12 @@ RUN curl -fsSL https://dot.net/v1/dotnet-install.sh \
 # only) — extend the flags here and rebuild instead.
 # ---------------------------------------------------------------------------
 ENV RUSTUP_HOME=/usr/local/rustup
-RUN curl -fsSL https://sh.rustup.rs \
+RUN if [ "${RUST_VERSION}" = "false" ]; then echo "skipping rust"; exit 0; fi \
+ && if [ "${RUST_VERSION}" = "latest" ]; then toolchain="stable"; else toolchain="${RUST_VERSION}"; fi \
+ && curl -fsSL https://sh.rustup.rs \
     | CARGO_HOME=/usr/local/cargo sh -s -- -y --no-modify-path \
         --profile default \
-        --default-toolchain "${RUST_VERSION}" \
+        --default-toolchain "${toolchain}" \
         --target wasm32-wasip1 \
  && chmod -R a+rX ${RUSTUP_HOME} /usr/local/cargo \
  && /usr/local/cargo/bin/rustc --version
@@ -125,13 +133,24 @@ RUN curl -fsSL https://sh.rustup.rs \
 # in /usr/local (real image content). Anything npm-globally installed AFTER
 # that env would go into ~/.cache and be shadowed by the cache volume.
 # ---------------------------------------------------------------------------
-RUN arch="$(dpkg --print-architecture)" \
+RUN if [ "${NODE_VERSION}" = "false" ]; then \
+      if [ "${PNPM_VERSION}" != "false" ] || [ "${NX_VERSION}" != "false" ]; then \
+        echo "ERROR: PNPM_VERSION/NX_VERSION require NODE_VERSION != false" >&2; exit 1; \
+      fi; echo "skipping node/pnpm/nx"; exit 0; \
+    fi \
+ && arch="$(dpkg --print-architecture)" \
  && case "$arch" in amd64) narch=x64 ;; arm64) narch=arm64 ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
- && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${narch}.tar.xz" \
+ && if [ "${NODE_VERSION}" = "latest" ]; then \
+      nver="$(curl -fsSL https://nodejs.org/dist/index.json | jq -r '.[0].version')"; \
+    else \
+      nver="v${NODE_VERSION}"; \
+    fi \
+ && [ -n "$nver" ] && [ "$nver" != "v" ] || { echo "node version resolution failed" >&2; exit 1; } \
+ && curl -fsSL "https://nodejs.org/dist/${nver}/node-${nver}-linux-${narch}.tar.xz" \
     | tar -xJ -C /usr/local --strip-components=1 --no-same-owner \
  && node --version \
- && npm install -g "pnpm@${PNPM_VERSION}" nx \
- && pnpm --version && nx --version
+ && if [ "${PNPM_VERSION}" != "false" ]; then npm install -g "pnpm@${PNPM_VERSION}" && pnpm --version; fi \
+ && if [ "${NX_VERSION}" != "false" ]; then npm install -g "nx@${NX_VERSION}" && nx --version; fi
 
 # ---------------------------------------------------------------------------
 # Non-root user with zsh as login shell — NO sudo. The image is immutable at
@@ -197,6 +216,7 @@ RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master
 # (RUSTUP_HOME stays at /usr/local/rustup so the cargo/rustc proxies find the
 #  baked toolchain; CARGO_HOME below only relocates the user's cargo data.)
 # ---------------------------------------------------------------------------
+
 ENV CARGO_HOME=/home/${USERNAME}/.cache/cargo \
     GOPATH=/home/${USERNAME}/.cache/go \
     NPM_CONFIG_CACHE=/home/${USERNAME}/.cache/npm \
@@ -210,14 +230,37 @@ ENV PATH="/home/${USERNAME}/.local/bin:${CARGO_HOME}/bin:${GOPATH}/bin:${NPM_CON
 # PARENT directory containing your projects as ~/workspace and every project
 # shares one deduplicated store, persisted on the host.
 # (Written to ~/.config/pnpm/rc, baked into the image.)
-RUN pnpm config set store-dir /home/${USERNAME}/workspace/.pnpm-store
+RUN if command -v pnpm >/dev/null; then \
+      pnpm config set store-dir /home/${USERNAME}/workspace/.pnpm-store; \
+    else echo "pnpm not installed; skipping store config"; fi
 
 # ---------------------------------------------------------------------------
 # omp (oh-my-pi) — AI coding agent / harness, via its official installer
 # (installs a release binary into ~/.local/bin, which is on PATH)
 # ---------------------------------------------------------------------------
-RUN curl -fsSL https://omp.sh/install | sh \
+RUN if [ "${OMP_INSTALL}" = "false" ]; then echo "skipping omp"; exit 0; fi \
+ && curl -fsSL https://omp.sh/install | sh \
  && command -v omp
+
+# ---------------------------------------------------------------------------
+# Claude Code CLI via its official installer (per-user: versions under
+# ~/.local/share/claude, launcher symlink in ~/.local/bin).
+# DISABLE_AUTOUPDATER: its background self-update can never succeed against
+# the read-only rootfs — update by rebuilding the image instead.
+#
+# CLAUDE_CONFIG_DIR routes Claude Code's config + credentials into ~/.claude
+# (a named volume), since its default of writing at $HOME level hits the
+# read-only rootfs.
+# ---------------------------------------------------------------------------
+ENV CLAUDE_CONFIG_DIR=/home/${USERNAME}/.claude
+ENV DISABLE_AUTOUPDATER=1
+RUN if [ "${CLAUDE_CODE_VERSION}" = "false" ]; then echo "skipping claude code"; exit 0; fi \
+ && if [ "${CLAUDE_CODE_VERSION}" = "latest" ]; then \
+      curl -fsSL https://claude.ai/install.sh | bash; \
+    else \
+      curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}"; \
+    fi \
+ && claude --version
 
 # ---------------------------------------------------------------------------
 # zsh configuration
@@ -239,11 +282,12 @@ RUN { \
 # the container runs with --read-only:
 #   ~/.cache        -> volume  (dependency + build caches, persistent)
 #   ~/.omp          -> volume  (omp credentials/config, persistent)
+#   ~/.claude       -> volume  (Claude Code config/credentials, persistent)
 #   ~/.local/state  -> volume  (shell history etc., persistent)
 #   ~/.vscodium-server -> volume (editor remote server, via open-remote-ssh)
 #   ~/workspace     -> bind    (your projects, the only host path exposed)
 # ---------------------------------------------------------------------------
-RUN mkdir -p ~/.cache ~/.omp ~/.local/state ~/.vscodium-server ~/workspace
+RUN mkdir -p ~/.cache ~/.omp ~/.claude ~/.local/state ~/.vscodium-server ~/workspace
 
 WORKDIR /home/${USERNAME}/workspace
 
