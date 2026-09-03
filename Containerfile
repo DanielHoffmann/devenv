@@ -18,27 +18,6 @@ FROM docker.io/library/ubuntu:24.04
 
 ARG USERNAME=devbox
 
-# --- optional components ---------------------------------------------------
-# Every runtime/agent below is opt-out and (where meaningful) version-pinnable
-# via these ARGs (override at build: podman build --build-arg NODE_VERSION=24.11.0 .):
-#   "latest" (default)  -> newest release, resolved at build time
-#   "<version>"         -> that exact version (e.g. NODE_VERSION=24.11.0,
-#                          RUST_VERSION=1.94, ZIG_VERSION=0.16.0)
-#   "false"             -> do not install
-# Unversioned components (installer-managed) take "true" (default) / "false":
-#   OMP_INSTALL. CLAUDE_CODE_VERSION additionally accepts a version.
-# Notes: PNPM/NX/GRAPHITE require NODE_VERSION != false (build fails loudly
-# otherwise).
-ARG NODE_VERSION=latest
-ARG PNPM_VERSION=latest
-ARG NX_VERSION=latest
-ARG GRAPHITE_VERSION=latest
-ARG RUST_VERSION=latest
-ARG GO_VERSION=latest
-ARG ZIG_VERSION=latest
-ARG OMP_INSTALL=true
-ARG CLAUDE_CODE_VERSION=latest
-
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------------------
@@ -80,6 +59,7 @@ RUN ln -sf "$(command -v fdfind)" /usr/local/bin/fd \
 # ---------------------------------------------------------------------------
 # Go (official tarball into /usr/local/go)
 # ---------------------------------------------------------------------------
+ARG GO_VERSION=latest
 RUN if [ "${GO_VERSION}" = "false" ]; then echo "skipping go"; exit 0; fi \
  && arch="$(dpkg --print-architecture)" \
  && if [ "${GO_VERSION}" = "latest" ]; then \
@@ -95,6 +75,7 @@ RUN if [ "${GO_VERSION}" = "false" ]; then echo "skipping go"; exit 0; fi \
 # ---------------------------------------------------------------------------
 # Zig (official tarball into /usr/local/zig, symlinked onto PATH)
 # ---------------------------------------------------------------------------
+ARG ZIG_VERSION=latest
 RUN if [ "${ZIG_VERSION}" = "false" ]; then echo "skipping zig"; exit 0; fi \
  && arch="$(dpkg --print-architecture)" \
  && case "$arch" in amd64) zarch=x86_64 ;; arm64) zarch=aarch64 ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
@@ -118,6 +99,7 @@ RUN if [ "${ZIG_VERSION}" = "false" ]; then echo "skipping zig"; exit 0; fi \
 # projects' [tools.rust]. Adding targets/components at runtime fails (read-
 # only) — extend the flags here and rebuild instead.
 # ---------------------------------------------------------------------------
+ARG RUST_VERSION=latest
 ENV RUSTUP_HOME=/usr/local/rustup
 RUN if [ "${RUST_VERSION}" = "false" ]; then echo "skipping rust"; exit 0; fi \
  && if [ "${RUST_VERSION}" = "latest" ]; then toolchain="stable"; else toolchain="${RUST_VERSION}"; fi \
@@ -135,6 +117,10 @@ RUN if [ "${RUST_VERSION}" = "false" ]; then echo "skipping rust"; exit 0; fi \
 # in /usr/local (real image content). Anything npm-globally installed AFTER
 # that env would go into ~/.cache and be shadowed by the cache volume.
 # ---------------------------------------------------------------------------
+ARG NODE_VERSION=latest
+ARG PNPM_VERSION=latest
+ARG NX_VERSION=latest
+ARG GRAPHITE_VERSION=latest
 RUN if [ "${NODE_VERSION}" = "false" ]; then \
       if [ "${PNPM_VERSION}" != "false" ] || [ "${NX_VERSION}" != "false" ] || [ "${GRAPHITE_VERSION}" != "false" ]; then \
         echo "ERROR: PNPM_VERSION/NX_VERSION/GRAPHITE_VERSION require NODE_VERSION != false" >&2; exit 1; \
@@ -244,6 +230,7 @@ RUN if command -v pnpm >/dev/null; then \
 # omp (oh-my-pi) — AI coding agent / harness, via its official installer
 # (installs a release binary into ~/.local/bin, which is on PATH)
 # ---------------------------------------------------------------------------
+ARG OMP_INSTALL=true
 RUN if [ "${OMP_INSTALL}" = "false" ]; then echo "skipping omp"; exit 0; fi \
  && curl -fsSL https://omp.sh/install | sh \
  && command -v omp
@@ -258,6 +245,7 @@ RUN if [ "${OMP_INSTALL}" = "false" ]; then echo "skipping omp"; exit 0; fi \
 # (a named volume), since its default of writing at $HOME level hits the
 # read-only rootfs.
 # ---------------------------------------------------------------------------
+ARG CLAUDE_CODE_VERSION=latest
 ENV CLAUDE_CONFIG_DIR=/home/${USERNAME}/.claude
 ENV DISABLE_AUTOUPDATER=1
 RUN if [ "${CLAUDE_CODE_VERSION}" = "false" ]; then echo "skipping claude code"; exit 0; fi \

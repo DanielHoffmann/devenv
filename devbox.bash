@@ -154,6 +154,8 @@ devbox-build() {
     fi
   done
 
+  echo build_args: "${build_args[@]}"
+  echo ""
   podman build "${build_args[@]}" -t "$image" "$src"
 }
 
