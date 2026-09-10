@@ -217,15 +217,6 @@ ENV CARGO_HOME=/home/${USERNAME}/.cache/cargo \
     PNPM_HOME=/home/${USERNAME}/.local/share/pnpm
 ENV PATH="/home/${USERNAME}/.local/bin:${CARGO_HOME}/bin:${GOPATH}/bin:${NPM_CONFIG_PREFIX}/bin:${PNPM_HOME}:/usr/local/cargo/bin:/usr/local/go/bin:${PATH}"
 
-# pnpm store on the container-private workspace volume (~/workspace/.pnpm-store):
-# same mount as projects cloned under ~/workspace, so pnpm's hard-linked installs
-# work there. Projects under ~/shared are on a different mount and fall back to
-# copying (hard links can't cross mounts).
-# (Written to ~/.config/pnpm/rc, baked into the image.)
-RUN if command -v pnpm >/dev/null; then \
-      pnpm config set store-dir /home/${USERNAME}/workspace/.pnpm-store; \
-    else echo "pnpm not installed; skipping store config"; fi
-
 # ---------------------------------------------------------------------------
 # omp (oh-my-pi) — AI coding agent / harness, via its official installer
 # (installs a release binary into ~/.local/bin, which is on PATH)
@@ -283,13 +274,11 @@ RUN { \
 #   ~/.ssh          -> volume  (container-side ssh keys/known_hosts; created
 #                               with chmod 700 in the sshd section above,
 #                               authorized_keys bind-mounted read-only on top)
-#   ~/workspace     -> volume  (container-private workspace + pnpm store,
-#                               persistent, never exposed to the host)
 #   ~/shared        -> bind    (the only host path exposed)
 # ---------------------------------------------------------------------------
-RUN mkdir -p ~/.cache ~/.local ~/.config ~/.omp ~/.claude ~/.vscodium-server ~/.ssh ~/workspace ~/shared 
+RUN mkdir -p ~/.cache ~/.local ~/.config ~/.omp ~/.claude ~/.vscodium-server ~/.ssh ~/shared 
 
-WORKDIR /home/${USERNAME}/shared
+WORKDIR /home/${USERNAME}/
 
 # Start sshd (non-fatal) around the requested command; default: login zsh
 ENTRYPOINT ["/usr/local/bin/devbox-entrypoint"]

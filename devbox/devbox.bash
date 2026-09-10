@@ -5,7 +5,7 @@
 # Fallback defaults via env: DEVBOX_IMAGE, DEVBOX_PROJECT
 devbox() {
   local image="${DEVBOX_IMAGE:-devbox}"
-  local project="${DEVBOX_PROJECT:-$HOME/shared}"   # <- adjust to your layout
+  local shared="${DEVBOX_PROJECT:-$HOME/$image}"
   local project_explicit=0
 
   local OPTIND opt
@@ -29,14 +29,14 @@ devbox() {
   done
   shift $((OPTIND - 1))
 
-  if [[ ! -d "$project" ]]; then
-    mkdir -p "$project"
+  if [[ ! -d "$shared" ]]; then
+    mkdir -p "$shared"
   fi
   # resolve to an absolute path (podman requires one for bind mounts)
-  project="$(cd "$project" && pwd)"
+  project="$(cd "$shared" && pwd)"
 
   # per-workspace shell config, sourced by the container's ~/.zshrc
-  [[ -f "$project/.zshrc" ]] || touch "$project/.zshrc"
+  [[ -f "$shared/.zshrc" ]] || touch "$shared/.zshrc"
 
   # dedicated keypair for SSH access into the container (editor remoting)
   local sshkey="$HOME/.ssh/devbox_ed25519"
@@ -78,27 +78,12 @@ devbox() {
     `# --- immutable root filesystem ---` \
     --read-only \
     --read-only-tmpfs=false \
-    --tmpfs /tmp:rw,exec,size=2g \
-    `# --- writable carve-outs ---` \
-    `# workspace (parent of your projects): the ONLY host path exposed` \
-    -v "${project}:/home/devbox/shared:Z" \
-    `# named volumes (container-managed, not host paths):` \
-    `# container-private workspace: persists across restarts but is never` \
-    `# visible on the host (unlike ~/shared); also holds the pnpm store` \
-    -v "${image}-workspace:/home/devbox/workspace" \
-    `# general application data` \
-    -v "${image}-share:/home/devbox/.local" \
-    -v "${image}-cache:/home/devbox/.cache" \
-    -v "${image}-config:/home/devbox/.config" \
-    `# omp credentials survive restarts; log in once with: omp /login` \
-    -v "${image}-omp:/home/devbox/.omp" \
-    `# Claude Code config/credentials; log in once with: claude` \
-    -v "${image}-claude:/home/devbox/.claude" \
-    `# editor remote server (open-remote-ssh installs it here)` \
-    -v "${image}-vscodium:/home/devbox/.vscodium-server" \
-    `# ssh keys generated INSIDE the container (plus known_hosts, config);` \
-    `# never sees the host's ~/.ssh` \
-    -v "${image}-ssh:/home/devbox/.ssh" \
+    --tmpfs /tmp:rw,exec,size=4g \
+    `# container-private home: persists across restarts but is never` \
+    `# visible on the host (unlike ~/shared)` \
+    -v "${image}-home:/home/devbox/" \
+    `# shared with the host` \
+    -v "${shared}:/home/devbox/shared:Z" \
     `# public half of the devbox keypair, for sshd key auth (read-only,` \
     `# SELinux-labeled; a copy in ~/.config/devbox, never ~/.ssh itself).` \
     `# Mounted INTO the ssh volume above (podman orders mounts by path depth),` \
@@ -111,7 +96,7 @@ devbox() {
     -p 127.0.0.1:2222:2222 \
     `# --- resource ceilings (tune or delete to taste) ---` \
     --pids-limit 4096 \
-    --memory 8g \
+    --memory 16g \
     "$image" "$@"
 }
 
@@ -230,3 +215,4 @@ devbox-delete() {
     podman volume ls -q | grep -E "^${pattern}-" | xargs -r podman volume rm
   fi
 }
+
