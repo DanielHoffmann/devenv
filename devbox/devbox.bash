@@ -12,9 +12,9 @@ devbox() {
   while getopts ":i:p:h" opt; do
     case "$opt" in
       i) image="$OPTARG" ;;
-      p) project="$OPTARG"; project_explicit=1 ;;
+      p) shared="$OPTARG"; project_explicit=1 ;;
       h)
-        echo "usage: devbox [-i image] [-p project_dir] [command...]" >&2
+        echo "usage: devbox [-i image] [-p project_dir] [command... | cd [dir]]" >&2
         return 0
         ;;
       \?)
@@ -33,7 +33,7 @@ devbox() {
     mkdir -p "$shared"
   fi
   # resolve to an absolute path (podman requires one for bind mounts)
-  project="$(cd "$shared" && pwd)"
+  shared="$(cd "$shared" && pwd)" || return 1
 
   # per-workspace shell config, sourced by the container's ~/.zshrc
   [[ -f "$shared/.zshrc" ]] || touch "$shared/.zshrc"
@@ -54,6 +54,28 @@ devbox() {
   mkdir -p "$HOME/.config/devbox"
   cp -f "${sshkey}.pub" "$akeys"
 
+  # terminal identity forwarded from the host so tools inside the container
+  # (colors, OSC sequences, editor integrations) see the real terminal.
+  # `-e VAR` without a value copies the host's value and is skipped if unset.
+  local term_env=(-e TERM -e TERM_PROGRAM -e TERM_PROGRAM_VERSION)
+
+  # `devbox cd DIR` — open an interactive shell already in DIR instead of
+  # running `cd` as a one-shot command (which would exit immediately).
+  # DIR is a container path: absolute paths are used as-is, anything else
+  # (including ~/…) is relative to the container home. `devbox cd` -> ~.
+  local workdir=()
+  if [[ $# -gt 0 && "$1" == "cd" ]]; then
+    local dir="${2:-/home/devbox}"
+    case "$dir" in
+      /*)  ;;
+      '~') dir="/home/devbox" ;;
+      '~/'*) dir="/home/devbox/${dir#\~/}" ;;
+      *)   dir="/home/devbox/$dir" ;;
+    esac
+    workdir=(-w "$dir")
+    set -- zsh -l
+  fi
+
   # One shared container per image name: if it's already running, open
   # another shell in it (podman exec) instead of creating a second container.
   local name="$image"
@@ -61,14 +83,16 @@ devbox() {
     (( project_explicit )) && \
       echo "devbox: note: container '$name' already running; -p ignored (mounts are fixed at start)" >&2
     if [[ $# -gt 0 ]]; then
-      podman exec -it "$name" "$@"
+      podman exec -it "${term_env[@]}" "${workdir[@]}" "$name" "$@"
     else
-      podman exec -it "$name" zsh -l
+      podman exec -it "${term_env[@]}" "$name" zsh -l
     fi
     return
   fi
 
   podman run -it --rm --name "$name" \
+    "${term_env[@]}" \
+    "${workdir[@]}" \
     `# --- privilege reduction ---` \
     --cap-drop=all \
     --security-opt no-new-privileges \
@@ -79,11 +103,15 @@ devbox() {
     --read-only \
     --read-only-tmpfs=false \
     --tmpfs /tmp:rw,exec,size=4g \
-    `# container-private home: persists across restarts but is never` \
-    `# visible on the host (unlike ~/shared)` \
+    `# writable, persistent home survives container restarts` \
+    `# is never visible on the host.` \
     -v "${image}-home:/home/devbox/" \
     `# shared with the host` \
     -v "${shared}:/home/devbox/shared:Z" \
+    `# ssh keys generated inside the container (id_*, known_hosts, config)` \
+    `# in their own named volume, so they survive a home volume wipe and` \
+    `# can be removed/backed up independently. ` \
+    -v "${image}-ssh:/home/devbox/.ssh" \
     `# public half of the devbox keypair, for sshd key auth (read-only,` \
     `# SELinux-labeled; a copy in ~/.config/devbox, never ~/.ssh itself).` \
     `# Mounted INTO the ssh volume above (podman orders mounts by path depth),` \
@@ -131,7 +159,7 @@ devbox-build() {
   # (indirection via eval: portable across bash and zsh; names come from the
   #  fixed list below, never user input)
   local build_args=() var arg val
-  for arg in NODE_VERSION PNPM_VERSION NX_VERSION GRAPHITE_VERSION RUST_VERSION GO_VERSION ZIG_VERSION OMP_INSTALL CLAUDE_CODE_VERSION; do
+  for arg in NODE_VERSION PNPM_VERSION NX_VERSION GRAPHITE_VERSION RUST_VERSION GO_VERSION ZIG_VERSION OMP_INSTALL CLAUDE_INSTALL; do
     var="DEVBOX_${arg}"
     eval "val=\${${var}:-}"
     if [[ -n "$val" ]]; then
@@ -170,31 +198,67 @@ devbox-stop() {
   printf '%s\n' $containers | xargs -r podman stop
 }
 
-# devbox-delete — remove the devbox image and any containers created from it.
-# Named volumes (caches, credentials, container-side ssh keys, state) are
-# KEPT unless -v is given.
+# devbox-delete — remove devbox state. Containers of the image are always
+# removed first (volumes and images can't be deleted while in use).
+#   devbox-delete        image only
+#   devbox-delete -home  <image>-home volume only
+#   devbox-delete -ssh   <image>-ssh volume + the host-side authorized_keys
+#                        copy (~/.config/devbox/authorized_keys; regenerated
+#                        on next start). Your ~/.ssh/devbox_ed25519 is kept.
+#   devbox-delete -a     image + all <image>-* volumes + authorized_keys copy
+# The host-shared project directory (~/shared in the container) is NEVER
+# touched.
 devbox-delete() {
   local image="${DEVBOX_IMAGE:-devbox}"
-  local rm_volumes=0
+  local del_image=0 del_home=0 del_ssh=0 del_all=0
 
-  local OPTIND opt
-  while getopts ":i:vh" opt; do
-    case "$opt" in
-      i) image="$OPTARG" ;;
-      v) rm_volumes=1 ;;
-      h) echo "usage: devbox-delete [-i image] [-v: also remove the image's <image>-* volumes]" >&2; return 0 ;;
-      \?) echo "devbox-delete: unknown option -$OPTARG (use -h)" >&2; return 2 ;;
-      :) echo "devbox-delete: option -$OPTARG requires an argument" >&2; return 2 ;;
+  # manual parsing: getopts can't do multi-letter flags like -home / -ssh
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -i)
+        [[ $# -ge 2 ]] || { echo "devbox-delete: option -i requires an argument" >&2; return 2; }
+        image="$2"; shift 2 ;;
+      -home) del_home=1; shift ;;
+      -ssh)  del_ssh=1; shift ;;
+      -a)    del_all=1; shift ;;
+      -h)
+        echo "usage: devbox-delete [-i image] [-home] [-ssh] [-a]" >&2
+        echo "  (no flags)  remove the image only" >&2
+        echo "  -home       remove the <image>-home volume" >&2
+        echo "  -ssh        remove the <image>-ssh volume and the authorized_keys copy" >&2
+        echo "  -a          remove the image and all <image>-* volumes" >&2
+        return 0 ;;
+      *) echo "devbox-delete: unknown option $1 (use -h)" >&2; return 2 ;;
     esac
   done
-  shift $((OPTIND - 1))
+  if (( del_all )); then
+    del_image=1; del_home=1; del_ssh=1
+  elif (( ! del_home && ! del_ssh )); then
+    del_image=1
+  fi
 
+  local akeys="$HOME/.config/devbox/authorized_keys"
   local containers
   containers="$(podman ps -aq --filter "ancestor=$image")"
 
-  local summary="image '$image'"
-  [[ -n "$containers" ]] && summary+=", $(wc -w <<<"$containers") container(s)"
-  (( rm_volumes )) && summary+=", ${image}-* volumes"
+  local items=()
+  [[ -n "$containers" ]] && items+=("$(wc -w <<<"$containers" | tr -d ' ') container(s)")
+  (( del_image )) && items+=("image '$image'")
+  (( del_home ))  && items+=("volume '${image}-home'")
+  (( del_ssh ))   && items+=("volume '${image}-ssh'" "file '$akeys'")
+  if (( del_all )); then
+    # any other ${image}-<suffix> volumes (escape '.' so the image name is
+    # matched literally; volume names only allow [a-zA-Z0-9_.-])
+    local pattern extra
+    pattern="$(printf '%s' "$image" | sed 's/\./\\./g')"
+    extra="$(podman volume ls -q | grep -E "^${pattern}-" | grep -vxE "${pattern}-(home|ssh)")"
+    [[ -n "$extra" ]] && items+=("other volumes: $(tr '\n' ' ' <<<"$extra")")
+  fi
+
+  local summary="" item
+  for item in "${items[@]}"; do
+    summary+="${summary:+, }${item}"
+  done
   echo "Will remove: $summary"
   local answer
   printf 'Proceed? [y/N] '
@@ -205,14 +269,19 @@ devbox-delete() {
     # xargs -r: no-op when the list is empty
     printf '%s\n' $containers | xargs -r podman rm -f
   fi
-  podman image exists "$image" && podman rmi "$image"
 
-  if (( rm_volumes )); then
-    # volumes are named ${image}-<suffix> by devbox(); escape '.' so the
-    # image name is matched literally (volume names only allow [a-zA-Z0-9_.-])
-    local pattern
-    pattern="$(printf '%s' "$image" | sed 's/\./\\./g')"
-    podman volume ls -q | grep -E "^${pattern}-" | xargs -r podman volume rm
+  (( del_image )) && podman image exists "$image" && podman rmi "$image"
+
+  (( del_home )) && podman volume exists "${image}-home" && podman volume rm "${image}-home"
+
+  if (( del_ssh )); then
+    podman volume exists "${image}-ssh" && podman volume rm "${image}-ssh"
+    rm -f "$akeys"
   fi
+
+  if (( del_all )) && [[ -n "$extra" ]]; then
+    printf '%s\n' $extra | xargs -r podman volume rm
+  fi
+  return 0
 }
 
