@@ -23,8 +23,26 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------------------
 # System packages: toolchain deps + common CLI utilities
+#
+# The ubuntu base image is "minimized": /etc/dpkg/dpkg.cfg.d/excludes tells
+# dpkg to drop man pages (and docs) from every package, and /usr/bin/man is a
+# stub that prints an "unminimize" notice — held in place by a dpkg
+# DIVERSION, so simply installing man-db lands the real binary at
+# /usr/bin/man.REAL and the stub keeps winning. Remove the rule and the
+# diversion first so every install below keeps its man pages, reinstall the
+# packages that came with the base image to restore theirs, then install
+# man-db + the core manuals.
+# (Not using `unminimize`: it is interactive and pulls in far more.)
 # ---------------------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN rm -f /etc/dpkg/dpkg.cfg.d/excludes \
+ && rm -f /usr/bin/man \
+ && dpkg-divert --quiet --remove --rename /usr/bin/man \
+ && apt-get update \
+ && apt-get install -y --reinstall --no-install-recommends \
+      $(dpkg-query -W -f='${binary:Package}\n') \
+ && apt-get install -y --no-install-recommends \
+    # manual pages: man(1) itself + the section 1-8 manuals
+    man-db manpages manpages-dev \
     # build essentials (needed by cargo crates, node-gyp, cgo, etc.)
     build-essential pkg-config cmake \
     # networking / certs
@@ -148,6 +166,37 @@ RUN if [ "${NODE_VERSION}" = "false" ]; then \
     fi
 
 # ---------------------------------------------------------------------------
+# Playwright system dependencies: the shared libraries Chromium needs
+# Playwright runs headless inside the container but can be reached in the host
+# if you start it with "pnpm exec playwright test --ui-host=0.0.0.0 --ui-port=3005"
+# ---------------------------------------------------------------------------
+ARG PLAYWRIGHT_INSTALL=true
+RUN if [ "${PLAYWRIGHT_INSTALL}" = "false" ]; then echo "skipping playwright deps"; exit 0; fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libglib2.0-0t64 \
+      libnspr4 \
+      libnss3 \
+      libatk1.0-0t64 \
+      libdbus-1-3 \
+      libx11-6 \
+      libxcomposite1 \
+      libxdamage1 \
+      libxext6 \
+      libxfixes3 \
+      libxrandr2 \
+      libgbm1 \
+      libxcb1 \
+      libxkbcommon0 \
+      libasound2t64 \
+      libatspi2.0-0t64 \
+      libatk-bridge2.0-0t64 \
+      libcups2t64 \
+      libcairo2 \
+      libpango-1.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
 # Non-root user with zsh as login shell — NO sudo. The image is immutable at
 # runtime; add packages by editing this file and rebuilding, not via sudo.
 # (Ubuntu 24.04 ships a default 'ubuntu' user at uid 1000 — replace it)
@@ -262,19 +311,8 @@ RUN { \
 # ---------------------------------------------------------------------------
 # Pre-create the directories devbox() mounts over, so volumes are seeded with
 # correct ownership/mode when the container runs with --read-only:
-#   ~/           -> <image>-home volume: the whole home (caches under ~/.cache,
-#                   pnpm bins + Claude launcher + shell history + sshd host key
-#                   under ~/.local, Graphite config under ~/.config, ~/.omp,
-#                   ~/.claude, ~/.vscodium-server); seeded from this image's
-#                   home on first use, persistent, never visible on the host
-#   ~/.ssh       -> <image>-ssh volume: container-side ssh keys/known_hosts
-#                   (created with chmod 700 in the sshd section above;
-#                   authorized_keys is bind-mounted read-only on top)
-#   ~/shared     -> host bind mount (the only host directory exposed)
-# The subdirectories are created here so the tools that expect them find
-# them on a fresh home volume before their first run.
 # ---------------------------------------------------------------------------
-RUN mkdir -p ~/.cache ~/.local ~/.config ~/.omp ~/.claude ~/.vscodium-server ~/.ssh ~/shared
+RUN mkdir -p ~/.ssh ~/shared
 
 WORKDIR /home/${USERNAME}/
 

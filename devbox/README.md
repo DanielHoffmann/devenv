@@ -116,6 +116,7 @@ Every runtime and agent is optional and version-pinnable. `devbox-build` passes 
 | `DEVBOX_RUST_VERSION` | Rust (rustup, default profile + `wasm32-wasip1` target) | version (e.g. `1.94`), `latest`, `false` |
 | `DEVBOX_GO_VERSION` | Go | version, `latest`, `false` |
 | `DEVBOX_ZIG_VERSION` | Zig | version, `latest`, `false` |
+| `DEVBOX_PLAYWRIGHT_INSTALL` | Playwright OS dependencies (the apt libraries Chromium needs; browsers are still installed per project) | `true`, `false` |
 | `DEVBOX_OMP_INSTALL` | omp agent | `true`, `false` |
 | `DEVBOX_CLAUDE_INSTALL` | Claude Code agent (always the latest release) | `true`, `false` |
 
@@ -133,6 +134,8 @@ DEVBOX_IMAGE=devbox-js DEVBOX_RUST_VERSION=false devbox-build
 ```
 
 Export them in your profile to make a selection permanent. `pnpm`/`nx`/Graphite require Node (the build fails with a clear error if Node is disabled but they aren't).
+
+Playwright: the image only bakes in the system libraries Chromium needs (an explicit apt list in the Containerfile — extend it there if Playwright reports a missing library), since `sudo playwright install-deps` can't run in the container (no sudo, read-only rootfs). There is no display server in the container, so browsers must run headless (the Playwright default; check for `headless: false` or `--headed` in the project config) or under the bundled virtual display: `xvfb-run pnpm exec playwright test`. A headed browser window is never visible on the host either way — use `--ui`/`--debug` with a trace, or run headed tests on the host, when you need to watch the browser. The browsers themselves are per project and land on the persistent home volume: `pnpm exec playwright install` inside the container, once per Playwright version.
 
 All toolchains are installed at build time because the container's root filesystem is read-only at runtime. This is the workflow's central rule: **to add or update a tool, edit the Containerfile and rebuild** — there is deliberately no `sudo apt install` inside a running container. Rebuilds are fast thanks to layer caching.
 

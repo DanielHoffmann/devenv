@@ -62,7 +62,7 @@ alias gb='git branch'
 alias gbd='git branch -d'
 alias gf='git fetch'
 alias gpull='git pull'
-alias gt='git tag'
+alias gtag='git tag'
 
 unalias gdf 2>/dev/null
 gdf() {

@@ -159,7 +159,7 @@ devbox-build() {
   # (indirection via eval: portable across bash and zsh; names come from the
   #  fixed list below, never user input)
   local build_args=() var arg val
-  for arg in NODE_VERSION PNPM_VERSION NX_VERSION GRAPHITE_VERSION RUST_VERSION GO_VERSION ZIG_VERSION OMP_INSTALL CLAUDE_INSTALL; do
+  for arg in NODE_VERSION PNPM_VERSION NX_VERSION GRAPHITE_VERSION RUST_VERSION GO_VERSION ZIG_VERSION PLAYWRIGHT_INSTALL OMP_INSTALL CLAUDE_INSTALL; do
     var="DEVBOX_${arg}"
     eval "val=\${${var}:-}"
     if [[ -n "$val" ]]; then
