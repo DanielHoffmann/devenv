@@ -10,6 +10,27 @@ alias p=podman
 
 alias size='du -ch '
 
+# iterm2 setup:
+# Settings -> Profiles -> Advanced -> Semantic History
+# Always run command: 
+# source /Users/danielhoffmannbernardes/devenv/aliases.bash && vscodium_ssh_open "\1" "\5"
+vscodium_ssh_open() {
+  local file="${1#/}"
+  local base="$2"
+
+  while [[ $base == */ ]]; do base="${base%/}"; done
+
+  if [[ $file == app/* && $base =~ /js[0-9]*$ ]]; then
+      file="apps/business/app/${file#app/}"
+  fi
+  local path="${base:+$base/}$file"
+  if [[ $(whoami) =~ ^devbox[0-9]+$ ]]; then
+      /opt/homebrew/bin/codium  --remote ssh-remote+devbox "$path"
+  else
+      /opt/homebrew/bin/codium  "$path"
+  fi
+}
+
 unalias sg 2>/dev/null
 sg() {
   grep --context=3 -- "$@"
