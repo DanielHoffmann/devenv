@@ -119,7 +119,8 @@ devbox() {
     -v "${akeys}:/home/devbox/.ssh/authorized_keys:ro,Z" \
     `# --- network: dev servers reachable at http://localhost:PORT ---` \
     `# bound to 127.0.0.1 so they are NOT exposed to your LAN` \
-    -p 127.0.0.1:3000-3005:3000-3005 \
+    -p 127.0.0.1:3000-3009:3000-3009 \
+    -p 127.0.0.1:6000-6009:6000-6009 \
     `# sshd, for editor access: ssh -p 2222 devbox@localhost` \
     -p 127.0.0.1:2222:2222 \
     `# --- resource ceilings (tune or delete to taste) ---` \

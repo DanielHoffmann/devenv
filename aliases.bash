@@ -93,7 +93,7 @@ gdf() {
 
 unalias gdd 2>/dev/null
 gdd() {
-  git diff origin/master -- "*$1*"
+  git diff origin/main -- "*$1*"
 }
 
 unalias gcheckbranch 2>/dev/null
