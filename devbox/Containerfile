@@ -13,6 +13,8 @@
 # Runtimes/tools (all optional, see ARGs): Node.js, pnpm, nx, Graphite CLI,
 #   Rust, Go, Zig — default "latest", pin with a version, disable with "false".
 # Shell: zsh + oh-my-zsh
+# Cloud CLI (optional): Google Cloud CLI (gcloud) — "latest", a version, or "false".
+# GitHub CLI (optional): gh — "latest", a version, or "false".
 # Agent harnesses (optional): omp (oh-my-pi), Claude Code
 
 FROM docker.io/library/ubuntu:24.04
@@ -195,6 +197,42 @@ RUN if [ "${PLAYWRIGHT_INSTALL}" = "false" ]; then echo "skipping playwright dep
       libcairo2 \
       libpango-1.0-0 \
  && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Google Cloud CLI (gcloud, gsutil, bq) from Google's apt repo.
+# The apt install disables gcloud's component manager, so
+# `gcloud components install` won't work — add extra components as apt
+# packages here (e.g. google-cloud-cli-gke-gcloud-auth-plugin) and rebuild.
+# User config/credentials go to ~/.config/gcloud on the home volume.
+# ---------------------------------------------------------------------------
+ARG GCLOUD_VERSION=latest
+RUN if [ "${GCLOUD_VERSION}" = "false" ]; then echo "skipping gcloud"; exit 0; fi \
+ && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+    | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+    > /etc/apt/sources.list.d/google-cloud-sdk.list \
+ && apt-get update \
+ && if [ "${GCLOUD_VERSION}" = "latest" ]; then pkg="google-cloud-cli"; else pkg="google-cloud-cli=${GCLOUD_VERSION}-0"; fi \
+ && apt-get install -y --no-install-recommends "$pkg" \
+ && rm -rf /var/lib/apt/lists/* \
+ && gcloud --version
+
+# ---------------------------------------------------------------------------
+# GitHub CLI (gh) from GitHub's official apt repo.
+# User config/credentials go to ~/.config/gh on the home volume.
+# ---------------------------------------------------------------------------
+ARG GH_VERSION=latest
+RUN if [ "${GH_VERSION}" = "false" ]; then echo "skipping gh"; exit 0; fi \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && if [ "${GH_VERSION}" = "latest" ]; then pkg="gh"; else pkg="gh=${GH_VERSION}"; fi \
+ && apt-get install -y --no-install-recommends "$pkg" \
+ && rm -rf /var/lib/apt/lists/* \
+ && gh --version
 
 # ---------------------------------------------------------------------------
 # Non-root user with zsh as login shell — NO sudo. The image is immutable at

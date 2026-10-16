@@ -1,6 +1,6 @@
 # devbox — hardened podman dev environment
 
-A sandboxed development container for running toolchains and coding agents with limited blast radius. Ubuntu 24.04 base with manually installed, system-wide toolchains (Node.js, pnpm, nx, Graphite CLI, Rust, Go, Zig), zsh + oh-my-zsh, the omp and Claude Code agent CLIs, Python 3, and a set of everyday CLI tools (jq, git-lfs, ripgrep, fd, fzf, bat, tmux, htop, vim, nano, rsync, and friends).
+A sandboxed development container for running toolchains and coding agents with limited blast radius. Ubuntu 24.04 base with manually installed, system-wide toolchains (Node.js, pnpm, nx, Graphite CLI, Rust, Go, Zig), zsh + oh-my-zsh, the Google Cloud CLI (`gcloud`), the GitHub CLI (`gh`), the omp and Claude Code agent CLIs, Python 3, and a set of everyday CLI tools (jq, git-lfs, ripgrep, fd, fzf, bat, tmux, htop, vim, nano, rsync, and friends).
 
 The container is designed to be run **rootless** with an **immutable root filesystem**, **no capabilities**, and **no privilege escalation path** — see [Security model](#security-model).
 
@@ -117,6 +117,8 @@ Every runtime and agent is optional and version-pinnable. `devbox-build` passes 
 | `DEVBOX_GO_VERSION` | Go | version, `latest`, `false` |
 | `DEVBOX_ZIG_VERSION` | Zig | version, `latest`, `false` |
 | `DEVBOX_PLAYWRIGHT_INSTALL` | Playwright OS dependencies (the apt libraries Chromium needs; browsers are still installed per project) | `true`, `false` |
+| `DEVBOX_GCLOUD_VERSION` | Google Cloud CLI (`gcloud`, `gsutil`, `bq`; apt package version, e.g. `589.0.0`) | version, `latest`, `false` |
+| `DEVBOX_GH_VERSION` | GitHub CLI (`gh`; apt package version, e.g. `2.80.0`) | version, `latest`, `false` |
 | `DEVBOX_OMP_INSTALL` | omp agent | `true`, `false` |
 | `DEVBOX_CLAUDE_INSTALL` | Claude Code agent (always the latest release) | `true`, `false` |
 
@@ -147,7 +149,7 @@ The root filesystem is read-only; the only writable places are `/tmp` (a size-ca
 
 | Volume | Mounted at | Holds |
 |---|---|---|
-| `<image>-home` | `/home/devbox` | the entire container home: dependency caches (`~/.cache`: cargo registry + bins, Go module cache + bins, npm cache + globals), pnpm global bins (`~/.local/share/pnpm`), the Claude Code launcher (`~/.local/bin`, `~/.local/share/claude`), zsh history and the sshd host key (`~/.local/state`), Graphite config (`~/.config/graphite`), omp credentials (`~/.omp`), Claude Code credentials (`~/.claude`), the editor remote server (`~/.vscodium-server`), and anything else written under `~` outside the mounts below |
+| `<image>-home` | `/home/devbox` | the entire container home: dependency caches (`~/.cache`: cargo registry + bins, Go module cache + bins, npm cache + globals), pnpm global bins (`~/.local/share/pnpm`), the Claude Code launcher (`~/.local/bin`, `~/.local/share/claude`), zsh history and the sshd host key (`~/.local/state`), Graphite config (`~/.config/graphite`), gcloud config + credentials (`~/.config/gcloud`), gh config + credentials (`~/.config/gh`), omp credentials (`~/.omp`), Claude Code credentials (`~/.claude`), the editor remote server (`~/.vscodium-server`), and anything else written under `~` outside the mounts below |
 | `<image>-ssh` | `~/.ssh` | container-side ssh keys, `known_hosts`, `config` — kept separate so it survives a home reset and can be removed on its own (`authorized_keys` is bind-mounted read-only on top) |
 
 Both are seeded from the image's home directory on first use, then persist across container restarts and image rebuilds. Mount order inside the container, outermost first: the home volume, then the ssh volume, then the host-shared workspace at `~/shared`, then the read-only `authorized_keys` file.
@@ -163,18 +165,21 @@ podman volume ls       # see what exists
 
 `devbox-delete` never touches the host-shared workspace. Because volumes can't be removed while a container uses them, every `devbox-delete` mode first stops and removes the image's containers — attached shells and editor sessions drop.
 
-## 4. CLI logins (omp, Claude Code, Graphite)
+## 4. CLI logins (omp, Claude Code, Graphite, gcloud, gh)
 
-Each tool's config and credentials live on the `<image>-home` volume (`~/.omp`, `~/.claude`, `~/.config/graphite`), so you log in once and it persists across containers and rebuilds:
+Each tool's config and credentials live on the `<image>-home` volume (`~/.omp`, `~/.claude`, `~/.config/graphite`, `~/.config/gcloud`, `~/.config/gh`), so you log in once and it persists across containers and rebuilds:
 
 ```sh
 devbox omp      # then authenticate via /login inside omp
 devbox claude   # follow the login flow (it prints a URL to open on the host;
                 # paste the code back — the container has no browser)
 devbox gt auth  # paste a token from https://app.graphite.dev (Settings → CLI)
+devbox gcloud auth login --no-launch-browser  # open the URL on the host, paste the code back
+devbox gcloud auth application-default login --no-launch-browser  # ADC for SDKs/tools, if needed
+devbox gh auth login  # choose "Login with a web browser", open the URL on the host, enter the code
 ```
 
-Claude Code's self-updater is disabled in the image (`DISABLE_AUTOUPDATER=1`) since it can't write to the read-only rootfs; update it by rebuilding.
+Claude Code's self-updater is disabled in the image (`DISABLE_AUTOUPDATER=1`) since it can't write to the read-only rootfs; update it by rebuilding. The same goes for gcloud: it's installed via apt, so `gcloud components install/update` is unavailable — add component packages (e.g. `google-cloud-cli-gke-gcloud-auth-plugin`) to the Containerfile and rebuild.
 
 Never bake API keys into the image or mount your host agent config dirs — the volume keeps credentials container-side only. `devbox-delete -home` logs you out of everything.
 
